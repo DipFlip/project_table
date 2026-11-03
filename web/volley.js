@@ -9,13 +9,14 @@ import { add, sub, mul, dot, norm, perp, clamp, rgb, OneEuro, drawText } from ".
 const WIN_SCORE = 11;
 const GRAVITY = 1.0; // x screen height per s²
 const BALL_R = 0.04; // x screen height
-const MAX_SPEED = 2.6; // x screen height per s
+const MAX_SPEED = 1.3; // after a hit, x screen height per s (1.3 rises at most ~0.85 screen heights)
 const NET_H = 0.33; // net height above the floor, x screen height
 const NET_HALF = 0.008; // half the net's thickness, x screen height
 const WALL_BOUNCE = 0.9, NET_BOUNCE = 0.5; // share of the speed into a wall / the net that comes back
 const PAD_BOUNCE = 0.75; // the same for a paddle (relative to the paddle)
 const GRIP = 0.3; // share of the paddle's sideways motion (relative to the ball) passed to the ball
-const POP = 0.9; // after a hit the ball leaves the paddle at least this fast (x screen height per s)
+const POP = 0.45; // after a hit the ball leaves the paddle at least this fast (x screen height per s)
+const PUNCH = 0.5; // share of the paddle's own speed that goes into a hit
 const HIT_COOLDOWN_S = 0.25; // a paddle can't hit the ball again this soon (contact just pushes it clear)
 const PAD_LEN = [0.14, 0.5]; // paddle length limits, x screen height
 const SEEN = 0.5; // landmark visibility that counts as in view
@@ -159,9 +160,10 @@ export class Volleyball {
   }
 
   bounce(ath, n, u, now) {
+    u = mul(u, PUNCH);
     if (now - ath.lastHit < HIT_COOLDOWN_S) return this.separate(n, u);
     const rel = sub(this.vel, u), vn = dot(rel, n);
-    if (vn >= 0) return; // already moving away: not a hit
+    if (vn >= 0) return this.separate(n, u); // already moving away: not a hit, just clear of the paddle
     const tangent = sub(rel, mul(n, vn));
     this.vel = sub(sub(this.vel, mul(n, (1 + PAD_BOUNCE) * vn)), mul(tangent, GRIP));
     this.separate(n, u);
