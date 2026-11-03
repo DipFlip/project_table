@@ -38,8 +38,8 @@ const NUM_HANDS = 2; // more makes MediaPipe keep searching for new hands every 
 // frames go to the worker at most this long a side: MediaPipe shrinks them to ~200 px anyway,
 // and full camera frames (3.7 MB each, 30 a second) pile up in Safari's GPU memory
 const GRAB_LONG = 640;
-// experiment switches: ?fx=0 no particles, ?sound=0 no sound, ?delegate=cpu MediaPipe on the CPU
-// (see the stats report)
+// switches: ?debug=1 shows the stats panel (tap it for the report), ?fx=0 no particles,
+// ?sound=0 no sound, ?delegate=cpu MediaPipe on the CPU
 const FLAGS = Object.fromEntries(new URLSearchParams(location.search));
 const DELEGATES = FLAGS.delegate === "cpu" ? ["CPU"] : ["GPU", "CPU"];
 
@@ -809,8 +809,10 @@ class CamApp {
     c.restore();
     this.stats.tick(now, { particles: this.fx.p.length, sounds: this.sound.live, ball: !!this.scene.ball });
     // in the middle, by the centre line, out of the paddles' way
-    this.statsBox = this.turned ? [8, this.H / 2 + 12] : [this.W / 2 - 145, this.H - 149];
-    this.stats.draw(c, now, this.tracker.where, ...this.statsBox);
+    if (FLAGS.debug === "1") {
+      this.statsBox = this.turned ? [8, this.H / 2 + 12] : [this.W / 2 - 145, this.H - 149];
+      this.stats.draw(c, now, this.tracker.where, ...this.statsBox);
+    }
   }
 
   inStats(x, y) {

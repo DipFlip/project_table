@@ -78,7 +78,7 @@ Vision running in the page, nothing uploaded). Live at https://finger-gun-pong.v
 
 Hand tracking runs in a worker when it gets the GPU there, otherwise on the page's GPU (blocks
 drawing briefly), CPU as a last resort; the bottom-left stats say which. `?tracker=worker` or
-`?tracker=page` forces one. Tap the stats panel for a second-by-second report of the last five
+`?tracker=page` forces one. `?debug=1` shows a stats panel; tap it for a second-by-second report of the last five
 minutes to copy; `?fx=0` and `?sound=0` turn off particles and sound to compare, `?delegate=cpu` runs
 MediaPipe on the CPU.
 
