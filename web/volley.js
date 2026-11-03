@@ -9,7 +9,7 @@ import { add, sub, mul, dot, norm, perp, clamp, rgb, OneEuro, drawText } from ".
 const WIN_SCORE = 11;
 const GRAVITY = 1.0; // x screen height per s²
 const BALL_R = 0.04; // x screen height
-const MAX_SPEED = 1.3; // after a hit, x screen height per s (1.3 rises at most ~0.85 screen heights)
+const MAX_SPEED = 1.0; // after a hit, x screen height per s (1.0 rises at most half a screen height)
 const NET_H = 0.33; // net height above the floor, x screen height
 const NET_HALF = 0.008; // half the net's thickness, x screen height
 const WALL_BOUNCE = 0.9, NET_BOUNCE = 0.5; // share of the speed into a wall / the net that comes back
@@ -19,8 +19,11 @@ const POP = 0.45; // after a hit the ball leaves the paddle at least this fast (
 const PUNCH = 0.5; // share of the paddle's own speed that goes into a hit
 const HIT_COOLDOWN_S = 0.25; // a paddle can't hit the ball again this soon (contact just pushes it clear)
 const PAD_LEN = [0.14, 0.5]; // paddle length limits, x screen height
-const SEEN = 0.5; // landmark visibility that counts as in view
-const GRACE_S = 0.3; // keep a player this long after they drop out of tracking (tracking blinks)
+const SEEN = 0.5; // landmark visibility that counts a head or shoulder as in view
+const WRIST_IN = 0.6, WRIST_OUT = 0.3; // a wrist comes into view above WRIST_IN and leaves below WRIST_OUT,
+// so a visibility hovering around one value doesn't flip the paddle between its shapes
+const WRIST_HOLD_S = 0.2; // a wrist that drops out stays where it was last seen this long
+const GRACE_S = 0.5; // keep a player this long after they drop out of tracking (tracking blinks)
 const PREDICT_S = 0.04; // extrapolate a paddle towards "now" by at most this much
 const JUMP = 0.25; // a body this far (x screen width) from everyone tracked is someone new
 const SERVE_S = 1.5; // pause after a point
@@ -38,7 +41,10 @@ const closest = (p, a, b) => {
 
 class Athlete {
   constructor() {
-    this.filter = new OneEuro(1.2, 0.004, 3.0);
+    this.filter = new OneEuro(0.7, 0.01, 3.0); // steadier than Finger Pong's: body landmarks are noisier
+    this.wrists = [null, null]; // last position each wrist was seen at, in screen px
+    this.wristAt = [-1e9, -1e9]; // and when
+    this.wristIn = [false, false];
     this.ends = null; // paddle ends in screen px, smoothed
     this.vel = [0, 0]; // paddle velocity, px/s
     this.t = null; // capture time of the last frame used
@@ -80,13 +86,21 @@ export class Volleyball {
     this.flash = null;
   }
 
-  // a body's paddle, or null if too little of it is in view
-  reach(pts) {
-    const H = this.H, ok = (i) => pts[i][2] >= SEEN;
-    const shoulders = ok(L_SHOULDER) && ok(R_SHOULDER) ? mul(add(pts[L_SHOULDER], pts[R_SHOULDER]), 0.5) : null;
-    const head = ok(NOSE) ? pts[NOSE].slice(0, 2) : shoulders;
-    if (!head) return null;
-    const wrists = [L_WRIST, R_WRIST].filter(ok).map((i) => pts[i].slice(0, 2));
+  // a body's head (or shoulders), or null if neither is in view
+  head(pts) {
+    const ok = (i) => pts[i][2] >= SEEN;
+    if (ok(NOSE)) return pts[NOSE].slice(0, 2);
+    return ok(L_SHOULDER) && ok(R_SHOULDER) ? mul(add(pts[L_SHOULDER], pts[R_SHOULDER]), 0.5) : null;
+  }
+
+  // a player's paddle from their head and the wrists in view (or held from a moment ago)
+  reach(ath, pts, head, t) {
+    const H = this.H;
+    [L_WRIST, R_WRIST].forEach((w, i) => {
+      ath.wristIn[i] = pts[w][2] >= (ath.wristIn[i] ? WRIST_OUT : WRIST_IN);
+      if (ath.wristIn[i]) [ath.wrists[i], ath.wristAt[i]] = [pts[w].slice(0, 2), t];
+    });
+    const wrists = ath.wrists.filter((p, i) => p && t - ath.wristAt[i] <= WRIST_HOLD_S);
     let a, b, how;
     if (wrists.length === 2) {
       [a, b, how] = [wrists[0], wrists[1], "hands"];
@@ -99,7 +113,7 @@ export class Volleyball {
     const mid = mul(add(a, b), 0.5), L = norm(sub(b, a));
     const d = L > 1e-6 ? mul(sub(b, a), 1 / L) : [1, 0];
     const half = clamp(L, PAD_LEN[0] * H, PAD_LEN[1] * H) / 2;
-    return { ends: [sub(mid, mul(d, half)), add(mid, mul(d, half))], how, at: head };
+    return { ends: [sub(mid, mul(d, half)), add(mid, mul(d, half))], how };
   }
 
   // bodies -> players with paddles, following each body from frame to frame
@@ -107,7 +121,10 @@ export class Volleyball {
     const frame = this.app.frame;
     if (!frame || frame.n === this.frameN) return;
     this.frameN = frame.n;
-    const bodies = frame.found.map((lm) => this.reach(lm.map((q) => [...this.app.toCourt(q), q[2]]))).filter(Boolean);
+    const bodies = frame.found.map((lm) => {
+      const pts = lm.map((q) => [...this.app.toCourt(q), q[2]]);
+      return { pts, at: this.head(pts) };
+    }).filter((b) => b.at);
     const pairs = []; // nearest first
     bodies.forEach((b, i) => this.athletes.forEach((a, j) => pairs.push([norm(sub(b.at, a.at)), i, j])));
     pairs.sort((x, y) => x[0] - y[0]);
@@ -120,7 +137,8 @@ export class Volleyball {
     bodies.forEach((b, i) => {
       let ath = matched.get(i);
       if (!ath) this.athletes.push((ath = new Athlete()));
-      let [p, q] = b.ends;
+      const pad = this.reach(ath, b.pts, b.at, frame.t);
+      let [p, q] = pad.ends;
       const e = ath.ends; // keep each end with the end it was last frame, so crossed arms don't swap them
       if (e && norm(sub(p, e[0])) + norm(sub(q, e[1])) > norm(sub(p, e[1])) + norm(sub(q, e[0]))) [p, q] = [q, p];
       const x = ath.filter.filter([...p, ...q], ath.t !== null ? frame.t - ath.t : 0);
@@ -128,7 +146,7 @@ export class Volleyball {
       ath.ends = [[x[0], x[1]], [x[2], x[3]]];
       ath.vel = [(v[0] + v[2]) / 2, (v[1] + v[3]) / 2];
       ath.t = ath.seen = frame.t;
-      Object.assign(ath, { at: b.at, how: b.how, team: b.at[0] < this.netX ? 0 : 1 });
+      Object.assign(ath, { at: b.at, how: pad.how, team: b.at[0] < this.netX ? 0 : 1 });
     });
     this.athletes = this.athletes.filter((a) => frame.t - a.seen <= GRACE_S);
   }

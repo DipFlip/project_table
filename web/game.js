@@ -405,7 +405,8 @@ const GAMES = {
     Scene: Volleyball, what: "body", zoom: 2, // whole bodies need the whole camera view
     task: "pose", model: POSE_MODEL, options: {
       runningMode: "VIDEO", numPoses: 6,
-      minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.5, minTrackingConfidence: 0.5,
+      // low presence/tracking thresholds keep a body through motion blur and partial views
+      minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.3, minTrackingConfidence: 0.3,
     },
   },
 };
