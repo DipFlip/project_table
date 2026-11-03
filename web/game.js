@@ -1,17 +1,22 @@
-// Finger-gun Pong in the browser: a port of webcam_pong.py + pmd/scenes/hand_pong.py + pong.py.
+// Camera games in the browser: Finger Pong (a port of webcam_pong.py + pmd/scenes/hand_pong.py
+// + pong.py, below) and full-body Volleyball (volley.js); the start page picks one.
 //
-// The webcam view fills the window (mirrored) and the court is drawn over it. Each player's
+// The webcam view fills the window (mirrored) and the court is drawn over it. In Finger Pong each player's
 // bouncer is the line between their thumb tip and index tip; the leftmost hand is the left
 // player, the rightmost the right player. On a portrait screen (phones) the court turns 90
 // degrees: the goals are the top and bottom edges and the topmost hand is the top player.
 //
-// Hand tracking is MediaPipe's hand landmarker, running in the page (WASM + WebGL), so nothing
+// Tracking is MediaPipe's hand or pose landmarker, running in the page (WASM + WebGL), so nothing
 // leaves the browser. It runs in a worker (tracker.js) so a slow detection never stalls the
 // ball; the camera image is shown as the <video> element itself, zoomed in a little so the
 // camera sees past the screen's edges and a hand at the edge is still tracked.
+import { FLAGS, add, sub, mul, dot, norm, perp, clamp, rgb, rand, OneEuro, Sound, Particles, drawText } from "./common.js";
+import { Volleyball } from "./volley.js";
+
 const BUNDLE = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.1/vision_bundle.mjs"; // keep tracker.js in step
 const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.1/wasm";
-const MODEL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+const HAND_MODEL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+const POSE_MODEL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task";
 
 // --- pong.py ---------------------------------------------------------------
 const WIN_SCORE = 7;
@@ -34,162 +39,14 @@ const JUMP = 0.3; // a hand appearing this far (x screen width) from the last on
 const VIRTUAL_TABLE_MM = 1100; // the screen's width stands for this much table
 const DIM_LEVELS = [0.35, 0.6, 1.0]; // video brightness under the game
 const ZOOMS = [1.25, 1.5, 1.0]; // how much the camera image is enlarged past filling the screen
-const NUM_HANDS = 2; // more makes MediaPipe keep searching for new hands every frame
 // frames go to the worker at most this long a side: MediaPipe shrinks them to ~200 px anyway,
 // and full camera frames (3.7 MB each, 30 a second) pile up in Safari's GPU memory
 const GRAB_LONG = 640;
-// switches: ?debug=1 shows the stats panel (tap it for the report), ?fx=0 no particles,
-// ?sound=0 no sound, ?delegate=cpu MediaPipe on the CPU
-const FLAGS = Object.fromEntries(new URLSearchParams(location.search));
 const DELEGATES = FLAGS.delegate === "cpu" ? ["CPU"] : ["GPU", "CPU"];
 
 const THUMB_TIP = 4, INDEX_TIP = 8;
 const BONES = [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8], [5, 9], [9, 10], [10, 11], [11, 12],
   [9, 13], [13, 14], [14, 15], [15, 16], [13, 17], [0, 17], [17, 18], [18, 19], [19, 20]];
-
-// --- small 2D vector helpers -------------------------------------------------
-const add = (a, b) => [a[0] + b[0], a[1] + b[1]];
-const sub = (a, b) => [a[0] - b[0], a[1] - b[1]];
-const mul = (a, k) => [a[0] * k, a[1] * k];
-const dot = (a, b) => a[0] * b[0] + a[1] * b[1];
-const norm = (a) => Math.hypot(a[0], a[1]);
-const perp = (v) => [-v[1], v[0]];
-const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
-const rgb = (c, a = 1) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
-const rand = (lo, hi) => lo + Math.random() * (hi - lo);
-
-// --- One Euro filter (pmd/filters.py), over a flat array ---------------------
-function alpha(cutoff, dt) {
-  const tau = 1 / (2 * Math.PI * cutoff);
-  return 1 / (1 + tau / dt);
-}
-
-class OneEuro {
-  constructor(minCutoff = 1.0, beta = 0.01, dCutoff = 2.0) {
-    Object.assign(this, { minCutoff, beta, dCutoff, x: null, dx: null });
-  }
-  filter(x, dt) {
-    if (this.x === null || dt <= 0) {
-      this.x = x.slice();
-      this.dx = x.map(() => 0);
-      return this.x;
-    }
-    const ad = alpha(this.dCutoff, dt);
-    this.dx = this.dx.map((d, i) => d + ad * ((x[i] - this.x[i]) / dt - d));
-    const cutoff = this.minCutoff + this.beta * Math.hypot(...this.dx);
-    const a = alpha(cutoff, dt);
-    this.x = this.x.map((v, i) => v + a * (x[i] - v));
-    return this.x;
-  }
-}
-
-// --- synthesised sounds (pmd/sound.py) ---------------------------------------
-class Sound {
-  constructor() {
-    this.ctx = new (window.AudioContext || window.webkitAudioContext)();
-    this.out = this.ctx.createGain();
-    this.out.gain.value = 0.8;
-    this.out.connect(this.ctx.destination);
-    this.live = 0; // sounds playing (for the stats)
-    const n = { C5: 523.3, E5: 659.3, G5: 784.0, C6: 1046.5 };
-    this.lib = {
-      hit: [["square", 520, 0.08, 0.35, 0.7, 0], ["noise", 0, 0.05, 0.2, 0, 0]],
-      wall: [["triangle", 300, 0.05, 0.3, 0, 0]],
-      score: [["square", n.E5, 0.09, 0.3, 0, 0], ["square", n.C6, 0.2, 0.3, 0, 0.09]],
-      win: [["square", n.C5, 0.12, 0.3, 0, 0], ["square", n.E5, 0.12, 0.3, 0, 0.12],
-        ["square", n.G5, 0.12, 0.3, 0, 0.24], ["square", n.C6, 0.45, 0.3, 0, 0.36]],
-      valve: [["triangle", 400, 0.08, 0.2, 1.3, 0]],
-    };
-  }
-  play(name, vol = 1) {
-    if (FLAGS.sound === "0") return;
-    const ctx = this.ctx, t0 = ctx.currentTime;
-    for (const [wave, freq, dur, v, slide, delay] of this.lib[name] || []) {
-      const g = ctx.createGain(), t = t0 + delay;
-      const level = v * vol * (wave === "square" ? 0.5 : 1);
-      g.gain.setValueAtTime(0, t);
-      g.gain.linearRampToValueAtTime(level, t + 0.005);
-      g.gain.setValueAtTime(level, t + Math.max(0.006, dur - 0.08));
-      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-      g.connect(this.out);
-      let src;
-      if (wave === "noise") {
-        const buf = ctx.createBuffer(1, Math.ceil(ctx.sampleRate * dur), ctx.sampleRate);
-        const d = buf.getChannelData(0);
-        let acc = 0;
-        for (let i = 0; i < d.length; i++) d[i] = acc += 0.5 * (Math.random() * 2 - 1 - acc);
-        src = ctx.createBufferSource();
-        src.buffer = buf;
-      } else {
-        src = ctx.createOscillator();
-        src.type = wave;
-        src.frequency.setValueAtTime(freq, t);
-        if (slide) src.frequency.linearRampToValueAtTime(freq * slide, t + dur);
-      }
-      src.connect(g);
-      src.start(t);
-      src.stop(t + dur + 0.02);
-      this.live++;
-      src.onended = () => { // some browsers keep connected nodes alive, piling up over a game
-        g.disconnect();
-        this.live--;
-      };
-    }
-  }
-}
-
-// --- particles (pmd/particles.py) --------------------------------------------
-class Particles {
-  constructor(max = FLAGS.fx === "0" ? 0 : 1500) {
-    this.p = [];
-    this.max = max;
-  }
-  burst(pos, color, { n = 20, speed = 200, life = 0.6, size = 4, spread = 2 * Math.PI, direction = 0, drag = 2, colors = null } = {}) {
-    for (let i = 0; i < n; i++) {
-      const ang = direction + (Math.random() - 0.5) * spread, sp = speed * (0.3 + 0.7 * Math.random());
-      this._add(pos, [Math.cos(ang) * sp, Math.sin(ang) * sp], life * (0.6 + 0.4 * Math.random()),
-        size * (0.6 + 0.8 * Math.random()), colors ? colors[Math.floor(Math.random() * colors.length)] : color, drag);
-    }
-  }
-  ring(pos, color, radius, { n = 24, speed = 60, life = 0.4, size = 3 } = {}) {
-    for (let i = 0; i < n; i++) {
-      const d = [Math.cos(2 * Math.PI * i / n), Math.sin(2 * Math.PI * i / n)];
-      this._add(add(pos, mul(d, radius)), mul(d, speed), life, size, color, 1);
-    }
-  }
-  // falls from the top of the screen; on a turned court the screen's top is the court's left
-  confetti(f, turned, n = 150) {
-    const colors = [[255, 80, 80], [255, 210, 60], [80, 230, 120], [240, 120, 255], [255, 255, 255], [255, 150, 40]];
-    for (let i = 0; i < n; i++) {
-      const across = Math.random(), down = Math.random() * 0.2, drift = (Math.random() - 0.5) * 200, fall = 150 + Math.random() * 250;
-      const pos = turned ? [f.left + down * f.width, f.top + across * f.height] : [f.left + across * f.width, f.top + down * f.height];
-      this._add(pos, turned ? [fall, drift] : [drift, fall], 1.5 + Math.random() * 1.5, 3 + Math.random() * 4,
-        colors[Math.floor(Math.random() * colors.length)], 0.3);
-    }
-  }
-  _add(pos, v, life, size, color, drag) {
-    this.p.push({ pos: pos.slice(), v, life, age: 0, size, color, drag });
-    if (this.p.length > this.max) this.p.splice(0, this.p.length - this.max);
-  }
-  update(dt) {
-    for (const q of this.p) {
-      q.age += dt;
-      q.v = mul(q.v, Math.exp(-q.drag * dt));
-      q.pos = add(q.pos, mul(q.v, dt));
-    }
-    this.p = this.p.filter((q) => q.age < q.life);
-  }
-  draw(c) {
-    for (const q of this.p) {
-      const f = Math.min(1, (1 - q.age / q.life) * 1.5);
-      c.fillStyle = rgb(q.color, f);
-      c.beginPath();
-      c.arc(q.pos[0], q.pos[1], Math.max(1, q.size * (0.4 + 0.6 * f)), 0, 2 * Math.PI);
-      c.fill();
-    }
-  }
-  clear() { this.p = []; }
-}
 
 // --- players (pmd/scenes/players.py) ------------------------------------------
 const COLORS = [[70, 220, 120], [255, 150, 50]];
@@ -218,6 +75,8 @@ class Hand {
 
 // --- the game (Pong + HandPong) -----------------------------------------------
 class HandPong {
+  static turns = true; // turned 90 degrees on a portrait screen
+
   constructor(app) {
     this.app = app;
     this.field = app.field;
@@ -250,7 +109,7 @@ class HandPong {
     const frame = this.app.frame;
     if (!frame || frame.n === this.frameN) return;
     this.frameN = frame.n;
-    const tips = frame.hands.map((h) => [this.app.toCourt(h[THUMB_TIP]), this.app.toCourt(h[INDEX_TIP])]);
+    const tips = frame.found.map((h) => [this.app.toCourt(h[THUMB_TIP]), this.app.toCourt(h[INDEX_TIP])]);
     const mx = (g) => (g[0][0] + g[1][0]) / 2;
     tips.sort((a, b) => mx(a) - mx(b));
     const bySide = {};
@@ -440,19 +299,8 @@ class HandPong {
     }
   }
 
-  text(c, size, msg, [x, y], color) {
-    c.save();
-    c.translate(x, y); // keep the text upright on screen when the court is turned
-    if (this.app.turned) c.rotate(-Math.PI / 2);
-    x = y = 0;
-    c.font = `bold ${Math.round(size)}px system-ui, -apple-system, sans-serif`;
-    c.textAlign = "center";
-    c.textBaseline = "middle";
-    c.fillStyle = "rgba(0,0,0,0.85)";
-    c.fillText(msg, x + 3, y + 3);
-    c.fillStyle = rgb(color);
-    c.fillText(msg, x, y);
-    c.restore();
+  text(c, size, msg, pos, color) {
+    drawText(c, size, msg, pos, color, this.app.turned ? -Math.PI / 2 : 0); // upright on screen when the court is turned
   }
 
   draw(c, now) {
@@ -482,7 +330,7 @@ class HandPong {
     if (frame && this.app.debug) {
       c.strokeStyle = "white";
       c.lineWidth = 2;
-      for (const h of frame.hands) {
+      for (const h of frame.found) {
         const pts = h.map((q) => this.app.toCourt(q));
         c.beginPath();
         for (const [a, b] of BONES) {
@@ -543,23 +391,37 @@ class HandPong {
   }
 }
 
-// --- hand tracking ----------------------------------------------------------------
-// Both trackers take a camera frame and resolve to { hands: [[x, y] x 21 per hand, normalised
-// and unmirrored], ms: detection time, grabMs: time to copy the frame for the worker }.
-// `where` says which one runs and on what (GPU or CPU) for the on-screen stats.
-const TRACKER_OPTIONS = {
-  runningMode: "VIDEO", numHands: NUM_HANDS,
-  // low presence/tracking thresholds keep a hand that's partly out of the camera's view
-  minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.3, minTrackingConfidence: 0.3,
+// --- the games and what they track --------------------------------------------------
+const GAMES = {
+  pong: {
+    Scene: HandPong, what: "hand", zoom: 0,
+    task: "hand", model: HAND_MODEL, options: {
+      runningMode: "VIDEO", numHands: 2, // more makes MediaPipe keep searching for new hands every frame
+      // low presence/tracking thresholds keep a hand that's partly out of the camera's view
+      minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.3, minTrackingConfidence: 0.3,
+    },
+  },
+  volley: {
+    Scene: Volleyball, what: "body", zoom: 2, // whole bodies need the whole camera view
+    task: "pose", model: POSE_MODEL, options: {
+      runningMode: "VIDEO", numPoses: 6,
+      minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.5, minTrackingConfidence: 0.5,
+    },
+  },
 };
 
+// --- tracking -----------------------------------------------------------------------
+// Both trackers take a camera frame and resolve to { found: [[x, y, visibility] per landmark,
+// per hand or body, normalised and unmirrored], ms: detection time, grabMs: time to copy the
+// frame for the worker }. `where` says which one runs and on what (GPU or CPU) for the stats.
+
 class WorkerTracker {
-  static create() {
+  static create(game) {
     const w = new Worker("tracker.js", { type: "module" });
     return new Promise((resolve, reject) => {
       w.onerror = (e) => reject(new Error(e.message || "worker failed to load"));
       w.onmessage = (e) => (e.data.type === "ready" ? resolve(new WorkerTracker(w, e.data.delegate)) : reject(new Error(e.data.message)));
-      w.postMessage({ type: "init", wasm: WASM, model: MODEL, options: TRACKER_OPTIONS, delegates: DELEGATES });
+      w.postMessage({ type: "init", wasm: WASM, task: game.task, model: game.model, options: game.options, delegates: DELEGATES });
     });
   }
   constructor(worker, delegate) {
@@ -567,11 +429,11 @@ class WorkerTracker {
     this.where = `worker ${delegate}`;
     this.worker = worker;
     this.pending = null;
-    worker.onerror = (e) => console.error("hand tracking worker:", e.message);
+    worker.onerror = (e) => console.error("tracking worker:", e.message);
     worker.onmessage = (e) => {
       const done = this.pending;
       this.pending = null;
-      done?.(e.data.type === "hands" ? e.data : { hands: [], ms: 0 });
+      done?.(e.data.type === "found" ? e.data : { found: [], ms: 0 });
     };
   }
   async detect(video, t) {
@@ -593,12 +455,13 @@ class WorkerTracker {
 // tracking on the page: each detection holds up drawing, so it's the fallback for browsers
 // where the worker can't use the GPU (MediaPipe on a phone's CPU can be as slow as ~5 Hz)
 class PageTracker {
-  static async create(delegates = ["GPU", "CPU"]) {
-    const { FilesetResolver, HandLandmarker } = await import(BUNDLE);
+  static async create(game, delegates = ["GPU", "CPU"]) {
+    const { FilesetResolver, HandLandmarker, PoseLandmarker } = await import(BUNDLE);
+    const Task = { hand: HandLandmarker, pose: PoseLandmarker }[game.task];
     const vision = await FilesetResolver.forVisionTasks(WASM);
     for (const delegate of delegates) {
       try {
-        return new PageTracker(await HandLandmarker.createFromOptions(vision, { ...TRACKER_OPTIONS, baseOptions: { modelAssetPath: MODEL, delegate } }), delegate);
+        return new PageTracker(await Task.createFromOptions(vision, { ...game.options, baseOptions: { modelAssetPath: game.model, delegate } }), delegate);
       } catch (e) {
         if (delegate === delegates.at(-1)) throw e;
       }
@@ -612,7 +475,7 @@ class PageTracker {
   async detect(video, t) {
     const t0 = performance.now();
     const res = this.landmarker.detectForVideo(video, t);
-    return { hands: res.landmarks.map((lm) => lm.map((p) => [p.x, p.y])), ms: performance.now() - t0, grabMs: 0 };
+    return { found: res.landmarks.map((lm) => lm.map((p) => [p.x, p.y, p.visibility ?? 1])), ms: performance.now() - t0, grabMs: 0 };
   }
 }
 
@@ -658,7 +521,7 @@ class Stats {
     if (!l) return;
     const lines = [
       `${(now - this.start).toFixed(0)} s   draw ${l.draw.toFixed(0)} fps   camera ${this.camKnown ? l.cam.toFixed(0) + " fps" : "?"}`,
-      `hands ${l.hands.toFixed(0)} Hz, both found ${(l.both * 100).toFixed(0)}%`,
+      `tracking ${l.hands.toFixed(0)} Hz, 2+ found ${(l.both * 100).toFixed(0)}%`,
       `${where}: grab ${l.grab.toFixed(0)} + detect ${l.detect.toFixed(0)} ms (max ${l.detectMax.toFixed(0)})`,
       `particles ${l.particles}   sounds ${l.sounds}`,
       "tap here for a report to send",
@@ -685,7 +548,7 @@ class Stats {
     c.textAlign = "left";
     c.textBaseline = "top";
     c.fillStyle = "rgb(70,220,120)";
-    c.fillText("hands Hz", x + gw + 6, y0 - gh - 4);
+    c.fillText("tracking Hz", x + gw + 6, y0 - gh - 4);
     c.fillStyle = "rgb(255,150,50)";
     c.fillText("detect ms /2", x + gw + 6, y0 - gh + 10);
     c.fillStyle = "white";
@@ -699,8 +562,8 @@ class Stats {
 
 // --- the page (webcam_pong.py's CamApp) -----------------------------------------
 class CamApp {
-  constructor(video, canvas, tracker) {
-    Object.assign(this, { video, canvas, tracker });
+  constructor(video, canvas, tracker, game) {
+    Object.assign(this, { video, canvas, tracker, game });
     this.ctx = canvas.getContext("2d");
     this.sound = new Sound();
     this.fx = new Particles();
@@ -710,7 +573,7 @@ class CamApp {
     this.busy = false; // a camera frame is with the tracker
     this.debug = false;
     this.dim = 1;
-    this.zoom = 0;
+    this.zoom = game.zoom;
     this.videoBox = "";
     this.now = performance.now() / 1000;
     this.stats = new Stats(this.now);
@@ -738,13 +601,13 @@ class CamApp {
     this.W = W;
     this.H = H;
     // the court's long axis is its x; on a portrait screen that runs down the screen
-    this.turned = H > W;
+    this.turned = this.game.Scene.turns && H > W;
     const CW = this.turned ? H : W, CH = this.turned ? W : H;
     this.pxPerMm = CW / VIRTUAL_TABLE_MM;
     const m = 4;
     this.field = { left: m, top: m, right: CW - m, bottom: CH - m, width: CW - 2 * m, height: CH - 2 * m, centerX: CW / 2, centerY: CH / 2 };
     this.fx.clear();
-    this.scene = new HandPong(this); // new size: new field
+    this.scene = new this.game.Scene(this); // new size: new field
   }
 
   // fit the camera image to cover the window and then some (cropping the overflow), keeping its
@@ -782,11 +645,11 @@ class CamApp {
     this.lastVideoTime = v.currentTime;
     const t = performance.now();
     this.busy = true;
-    this.tracker.detect(v, t).then(({ hands, ms, grabMs }) => {
+    this.tracker.detect(v, t).then(({ found, ms, grabMs }) => {
       this.busy = false;
-      this.stats.result(ms, grabMs, hands.length);
+      this.stats.result(ms, grabMs, found.length);
       // mirrored like the video
-      this.frame = { hands: hands.map((lm) => lm.map((p) => [1 - p[0], p[1]])), t: t / 1000, n: ++this.frameCount };
+      this.frame = { found: found.map((lm) => lm.map((p) => [1 - p[0], p[1], p[2]])), t: t / 1000, n: ++this.frameCount };
     });
   }
 
@@ -824,7 +687,7 @@ class CamApp {
     const v = this.video;
     const text = this.stats.report([
       `${navigator.userAgent}`,
-      `screen ${this.W}x${this.H} dpr ${devicePixelRatio}, camera ${v.videoWidth}x${v.videoHeight}, tracking ${this.tracker.where} (frames ${this.tracker.size || "as captured"}), ` +
+      `${this.game.Scene.name}, screen ${this.W}x${this.H} dpr ${devicePixelRatio}, camera ${v.videoWidth}x${v.videoHeight}, tracking ${this.tracker.where} (frames ${this.tracker.size || "as captured"}), ` +
         `zoom ${ZOOMS[this.zoom]}, flags ${location.search || "none"}`,
     ]);
     const box = document.getElementById("report");
@@ -850,40 +713,39 @@ class CamApp {
   }
 }
 
-async function start() {
-  const go = document.getElementById("go"), err = document.getElementById("err");
-  go.disabled = true;
-  err.textContent = "";
+async function start(game) {
+  const buttons = document.querySelectorAll("#start button"), err = document.getElementById("err");
+  buttons.forEach((b) => (b.disabled = true));
   try {
-    go.textContent = "Starting camera…";
+    err.textContent = "Starting camera…";
     const video = document.getElementById("video");
     video.srcObject = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }, audio: false,
     });
     await video.play();
-    go.textContent = "Loading hand model…";
+    err.textContent = `Loading ${game.what} tracking…`;
     // ?tracker=worker or ?tracker=page forces one, to compare them on a device
     const force = new URLSearchParams(location.search).get("tracker");
     let tracker = null;
     if (force !== "page") {
       try {
-        tracker = await WorkerTracker.create();
+        tracker = await WorkerTracker.create(game);
       } catch (e) {
-        console.warn("hand tracking worker failed:", e);
+        console.warn("tracking worker failed:", e);
       }
     }
     if (force !== "worker" && (!tracker || (tracker.delegate === "CPU" && FLAGS.delegate !== "cpu"))) {
       try { // the GPU on the page beats the CPU in the worker, even though it holds up drawing
-        const page = await PageTracker.create(tracker ? ["GPU"] : DELEGATES);
+        const page = await PageTracker.create(game, tracker ? ["GPU"] : DELEGATES);
         tracker?.close();
         tracker = page;
       } catch (e) {
         if (!tracker) throw e;
       }
     }
-    if (!tracker) throw new Error("hand tracking failed to start");
+    if (!tracker) throw new Error("tracking failed to start");
     document.getElementById("start").remove();
-    const app = new CamApp(video, document.getElementById("canvas"), tracker);
+    const app = new CamApp(video, document.getElementById("canvas"), tracker, game);
     addEventListener("keydown", (e) => app.key(e));
     const report = document.getElementById("report");
     report.querySelector(".close").onclick = () => (report.hidden = true);
@@ -896,7 +758,7 @@ async function start() {
         ta.select(); // clipboard refused: leave it selected to copy by hand
       }
     };
-    let lastTap = 0; // double-tap toggles the hand skeletons (phones have no d key)
+    let lastTap = 0; // double-tap toggles the skeletons (phones have no d key)
     addEventListener("pointerup", (e) => {
       if (!report.hidden) return;
       if (app.inStats(e.clientX, e.clientY)) return app.showReport();
@@ -914,9 +776,8 @@ async function start() {
   } catch (e) {
     console.error(e);
     err.textContent = e.name === "NotAllowedError" ? "Camera access was denied." : `Could not start: ${e.message || e}`;
-    go.disabled = false;
-    go.textContent = "Try again";
+    buttons.forEach((b) => (b.disabled = false));
   }
 }
 
-document.getElementById("go").addEventListener("click", start);
+for (const b of document.querySelectorAll("#start button[data-game]")) b.addEventListener("click", () => start(GAMES[b.dataset.game]));

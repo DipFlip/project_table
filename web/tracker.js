@@ -1,7 +1,7 @@
-// Hand tracking off the main thread: game.js posts camera frames (ImageBitmaps), this
+// Hand or body tracking off the main thread: game.js posts camera frames (ImageBitmaps), this
 // worker runs MediaPipe on them and posts the landmarks back, so a slow detection never
 // holds up drawing the ball.
-import { FilesetResolver, HandLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.1/vision_bundle.mjs";
+import { FilesetResolver, HandLandmarker, PoseLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.1/vision_bundle.mjs";
 
 let landmarker = null;
 
@@ -21,7 +21,7 @@ onmessage = async (e) => {
       let used;
       for (const delegate of m.delegates) {
         try {
-          landmarker = await HandLandmarker.createFromOptions(vision, { ...m.options, baseOptions: { modelAssetPath: m.model, delegate } });
+          landmarker = await { hand: HandLandmarker, pose: PoseLandmarker }[m.task].createFromOptions(vision, { ...m.options, baseOptions: { modelAssetPath: m.model, delegate } });
           used = delegate;
           break;
         } catch (err) {
@@ -38,7 +38,8 @@ onmessage = async (e) => {
   try {
     const t0 = performance.now();
     const res = landmarker.detectForVideo(m.bitmap, m.t);
-    postMessage({ type: "hands", t: m.t, ms: performance.now() - t0, hands: res.landmarks.map((lm) => lm.map((p) => [p.x, p.y])) });
+    const found = res.landmarks.map((lm) => lm.map((p) => [p.x, p.y, p.visibility ?? 1]));
+    postMessage({ type: "found", t: m.t, ms: performance.now() - t0, found });
   } catch (err) {
     postMessage({ type: "error", message: String(err && err.message || err) });
   } finally {

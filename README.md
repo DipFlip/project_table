@@ -71,13 +71,21 @@ On macOS the terminal needs camera access (System Settings > Privacy & Security 
 
 ### In the browser
 `web/` is the same game as a static page (JS port of `hand_pong.py`, MediaPipe Tasks
-Vision running in the page, nothing uploaded). Live at https://finger-gun-pong.vercel.app.
+Vision running in the page, nothing uploaded), plus a full-body Volleyball; the start page
+picks one. Live at https://finger-gun-pong.vercel.app.
+
+Volleyball (`web/volley.js`) is made for a projector with the laptop camera watching the
+players: side view, gravity, a net and bouncy back walls, any number of players per side
+(MediaPipe pose, up to 6 bodies). Your paddle runs between your wrists; with one wrist in
+view it's level with it and mirrored across your head, with none it sits just above your
+head. A ball above the screen shows as an arrow on the top edge; it scores for the other
+side when it lands. First to 11.
 
     python3 -m http.server 8517 -d web             # local: http://localhost:8517
     cd web && npx vercel deploy --prod             # redeploy from CLI
 
-Hand tracking runs in a worker when it gets the GPU there, otherwise on the page's GPU (blocks
-drawing briefly), CPU as a last resort; the bottom-left stats say which. `?tracker=worker` or
+Tracking runs in a worker when it gets the GPU there, otherwise on the page's GPU (blocks
+drawing briefly), CPU as a last resort; the stats panel says which. `?tracker=worker` or
 `?tracker=page` forces one. `?debug=1` shows a stats panel; tap it for a second-by-second report of the last five
 minutes to copy; `?fx=0` and `?sound=0` turn off particles and sound to compare, `?delegate=cpu` runs
 MediaPipe on the CPU.
