@@ -23,13 +23,16 @@ const SEEN = 0.5; // landmark visibility that counts a head or shoulder as in vi
 const WRIST_IN = 0.6, WRIST_OUT = 0.3; // a wrist comes into view above WRIST_IN and leaves below WRIST_OUT,
 // so a visibility hovering around one value doesn't flip the paddle between its shapes
 const WRIST_HOLD_S = 0.2; // a wrist that drops out stays where it was last seen this long
+const FOREARM = 0.85; // wrist lost, elbow in view: the wrist is taken this far past the elbow (x upper arm),
+// as if the arm were straight, unless MediaPipe's own guess is plausibly attached to the elbow
 const GRACE_S = 0.5; // keep a player this long after they drop out of tracking (tracking blinks)
 const PREDICT_S = 0.04; // extrapolate a paddle towards "now" by at most this much
 const JUMP = 0.25; // a body this far (x screen width) from everyone tracked is someone new
 const SERVE_S = 1.5; // pause after a point
 
 // MediaPipe pose landmarks
-const NOSE = 0, L_SHOULDER = 11, R_SHOULDER = 12, L_WRIST = 15, R_WRIST = 16;
+const NOSE = 0, L_SHOULDER = 11, R_SHOULDER = 12, L_ELBOW = 13, R_ELBOW = 14, L_WRIST = 15, R_WRIST = 16;
+const ARMS = [[L_SHOULDER, L_ELBOW, L_WRIST], [R_SHOULDER, R_ELBOW, R_WRIST]];
 const BONES = [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24], [23, 25], [25, 27],
   [24, 26], [26, 28]];
 const TEAMS = [{ name: "green", color: [70, 220, 120] }, { name: "orange", color: [255, 150, 50] }];
@@ -93,12 +96,20 @@ export class Volleyball {
     return ok(L_SHOULDER) && ok(R_SHOULDER) ? mul(add(pts[L_SHOULDER], pts[R_SHOULDER]), 0.5) : null;
   }
 
-  // a player's paddle from their head and the wrists in view (or held from a moment ago)
+  // a player's paddle from their head and their wrists: seen, followed along the forearm from
+  // the elbow, or held from a moment ago
   reach(ath, pts, head, t) {
-    const H = this.H;
-    [L_WRIST, R_WRIST].forEach((w, i) => {
+    const H = this.H, ok = (j) => pts[j][2] >= SEEN;
+    ARMS.forEach(([s, e, w], i) => {
       ath.wristIn[i] = pts[w][2] >= (ath.wristIn[i] ? WRIST_OUT : WRIST_IN);
-      if (ath.wristIn[i]) [ath.wrists[i], ath.wristAt[i]] = [pts[w].slice(0, 2), t];
+      let at = null;
+      if (ath.wristIn[i]) {
+        at = pts[w];
+      } else if (ok(e) && ok(s)) {
+        const upper = sub(pts[e], pts[s]);
+        at = norm(sub(pts[w], pts[e])) <= 1.4 * norm(upper) ? pts[w] : add(pts[e], mul(upper, FOREARM));
+      }
+      if (at) [ath.wrists[i], ath.wristAt[i]] = [at.slice(0, 2), t];
     });
     const wrists = ath.wrists.filter((p, i) => p && t - ath.wristAt[i] <= WRIST_HOLD_S);
     let a, b, how;

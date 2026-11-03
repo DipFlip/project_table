@@ -76,7 +76,7 @@ picks one. Live at https://finger-gun-pong.vercel.app.
 
 Volleyball (`web/volley.js`) is made for a projector with the laptop camera watching the
 players: side view, gravity, a net and bouncy back walls, any number of players per side
-(MediaPipe pose, up to 6 bodies). Your paddle runs between your wrists; with one wrist in
+(MediaPipe pose, up to 6 bodies; `?pose=lite|full|heavy` picks the model, full by default). Your paddle runs between your wrists; with one wrist in
 view it's level with it and mirrored across your head, with none it sits just above your
 head. A ball above the screen shows as an arrow on the top edge; it scores for the other
 side when it lands. First to 11.

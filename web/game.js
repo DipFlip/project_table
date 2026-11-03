@@ -16,7 +16,9 @@ import { Volleyball } from "./volley.js";
 const BUNDLE = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.1/vision_bundle.mjs"; // keep tracker.js in step
 const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.1/wasm";
 const HAND_MODEL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
-const POSE_MODEL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task";
+// ?pose=lite / full / heavy picks the body model: heavier is better at arms and hands, but slower
+const POSE = ["lite", "full", "heavy"].includes(FLAGS.pose) ? FLAGS.pose : "full";
+const POSE_MODEL = `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_${POSE}/float16/1/pose_landmarker_${POSE}.task`;
 
 // --- pong.py ---------------------------------------------------------------
 const WIN_SCORE = 7;
@@ -39,9 +41,6 @@ const JUMP = 0.3; // a hand appearing this far (x screen width) from the last on
 const VIRTUAL_TABLE_MM = 1100; // the screen's width stands for this much table
 const DIM_LEVELS = [0.35, 0.6, 1.0]; // video brightness under the game
 const ZOOMS = [1.25, 1.5, 1.0]; // how much the camera image is enlarged past filling the screen
-// frames go to the worker at most this long a side: MediaPipe shrinks them to ~200 px anyway,
-// and full camera frames (3.7 MB each, 30 a second) pile up in Safari's GPU memory
-const GRAB_LONG = 640;
 const DELEGATES = FLAGS.delegate === "cpu" ? ["CPU"] : ["GPU", "CPU"];
 
 const THUMB_TIP = 4, INDEX_TIP = 8;
@@ -395,6 +394,9 @@ class HandPong {
 const GAMES = {
   pong: {
     Scene: HandPong, what: "hand", zoom: 0,
+    // frames go to the worker at most this long a side: hands fill a phone's view, and full camera
+    // frames (3.7 MB each, 30 a second) pile up in Safari's GPU memory
+    grab: 640,
     task: "hand", model: HAND_MODEL, options: {
       runningMode: "VIDEO", numHands: 2, // more makes MediaPipe keep searching for new hands every frame
       // low presence/tracking thresholds keep a hand that's partly out of the camera's view
@@ -403,6 +405,7 @@ const GAMES = {
   },
   volley: {
     Scene: Volleyball, what: "body", zoom: 2, // whole bodies need the whole camera view
+    grab: 1280, // players stand back from a laptop: keep the pixels their wrists have
     task: "pose", model: POSE_MODEL, options: {
       runningMode: "VIDEO", numPoses: 6,
       // low presence/tracking thresholds keep a body through motion blur and partial views
@@ -421,12 +424,13 @@ class WorkerTracker {
     const w = new Worker("tracker.js", { type: "module" });
     return new Promise((resolve, reject) => {
       w.onerror = (e) => reject(new Error(e.message || "worker failed to load"));
-      w.onmessage = (e) => (e.data.type === "ready" ? resolve(new WorkerTracker(w, e.data.delegate)) : reject(new Error(e.data.message)));
+      w.onmessage = (e) => (e.data.type === "ready" ? resolve(new WorkerTracker(w, e.data.delegate, game.grab)) : reject(new Error(e.data.message)));
       w.postMessage({ type: "init", wasm: WASM, task: game.task, model: game.model, options: game.options, delegates: DELEGATES });
     });
   }
-  constructor(worker, delegate) {
+  constructor(worker, delegate, grab) {
     this.delegate = delegate;
+    this.grab = grab;
     this.where = `worker ${delegate}`;
     this.worker = worker;
     this.pending = null;
@@ -439,7 +443,7 @@ class WorkerTracker {
   }
   async detect(video, t) {
     const t0 = performance.now();
-    const k = Math.min(1, GRAB_LONG / Math.max(video.videoWidth, video.videoHeight));
+    const k = Math.min(1, this.grab / Math.max(video.videoWidth, video.videoHeight));
     const w = Math.round(video.videoWidth * k), h = Math.round(video.videoHeight * k);
     const bitmap = await createImageBitmap(video, { resizeWidth: w, resizeHeight: h, resizeQuality: "low" });
     this.size = `${bitmap.width}x${bitmap.height}`; // full size where the resize option isn't supported
@@ -688,7 +692,7 @@ class CamApp {
     const v = this.video;
     const text = this.stats.report([
       `${navigator.userAgent}`,
-      `${this.game.Scene.name}, screen ${this.W}x${this.H} dpr ${devicePixelRatio}, camera ${v.videoWidth}x${v.videoHeight}, tracking ${this.tracker.where} (frames ${this.tracker.size || "as captured"}), ` +
+      `${this.game.Scene.name}${this.game.task === "pose" ? ` (${POSE} model)` : ""}, screen ${this.W}x${this.H} dpr ${devicePixelRatio}, camera ${v.videoWidth}x${v.videoHeight}, tracking ${this.tracker.where} (frames ${this.tracker.size || "as captured"}), ` +
         `zoom ${ZOOMS[this.zoom]}, flags ${location.search || "none"}`,
     ]);
     const box = document.getElementById("report");
