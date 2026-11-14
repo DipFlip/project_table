@@ -1,6 +1,7 @@
 // Finger Pong's fire hands (on by default; the h key toggles them, ?fx=nofire starts without): each player's hand is cut out of the camera
 // image, tinted in their colour and drawn undimmed over the video, with flames licking off the
-// fingertips and a glow that flares when their bouncer hits the ball.
+// fingertips and a glow that flares when their bouncer hits the ball. Every ball starts cold and
+// catches fire hit by hit: the rally's paddle hits / RAMP_HITS sets the heat, full after RAMP_HITS.
 //
 // The cut-out is a soft mask built from the 21 hand landmarks the game already tracks (fat
 // strokes along the fingers, a filled palm, blurred and drawn at half resolution), not a
@@ -22,9 +23,15 @@ const SMOKE_ODDS = 0.12; // chance a dying flame leaves a puff of smoke
 const BALL_FIRE = [255, 150, 40]; // the ball's flame before anyone has hit it
 const BALL_RATE = 120; // ball flames per second
 const FLASH_S = 0.45; // a hit's glow fades over this long
+const RAMP_HITS = 10; // paddle hits in a rally to reach full fire; each new ball starts cold
 
 export class HandFire {
   static on = FLAGS.fx !== "nofire" && FLAGS.fx !== "0";
+
+  // 0 (a new ball, no fire) .. 1 (full fire), from the rally's paddle hits
+  get heat() {
+    return HandFire.on ? clamp((this.app.scene?.rally ?? 0) / RAMP_HITS, 0, 1) : 0;
+  }
 
   constructor(app) {
     this.app = app;
@@ -123,6 +130,8 @@ export class HandFire {
 
   // flames thrown out around `at` (screen px) along `d` (unit, screen) with `spread` radians each way
   blast(at, d, spread, r, color, { flames = 0, sparks = 0, smoke = 0, speed = 1 }) {
+    const k = this.heat;
+    [flames, sparks, smoke] = [Math.round(flames * k), Math.round(sparks * k), Math.round(smoke * k)];
     const a0 = Math.atan2(d[1], d[0]);
     for (let i = 0; i < flames + sparks; i++) {
       const spark = i >= flames, a = a0 + (Math.random() * 2 - 1) * spread;
@@ -181,14 +190,14 @@ export class HandFire {
       const who = this.owners(frame.found);
       const lead = clamp(now - frame.t, 0, LEAD_MAX);
       frame.found.forEach((h, i) => {
-        if (who[i] < 0) return;
+        if (who[i] < 0 || this.heat <= 0) return;
         const v = this.tracks[i]?.vel || [0, 0];
         const p = h.map((q) => app.toScreen([q[0] + v[0] * lead, q[1] + v[1] * lead]));
         const flash = scene.flash && scene.flash[0] === who[i] ? Math.max(0, 1 - (now - scene.flash[1]) / FLASH_S) : 0;
         this.hand(c, p, scene.players[who[i]].color, flash, dt, v);
       });
     }
-    if (scene.ball) this.ball(c, scene, dt);
+    if (scene.ball && this.heat > 0) this.ball(c, scene, dt);
     this.burn(c, dt, false);
     c.restore();
   }
@@ -198,12 +207,13 @@ export class HandFire {
     const r = scene.r, b = this.pt(scene.ball), v = this.dir(scene.vel);
     const color = scene.flash ? scene.players[scene.flash[0]].color : BALL_FIRE;
     c.globalCompositeOperation = "lighter";
-    c.globalAlpha = 0.6;
-    const gs = r * 8;
+    const k = this.heat;
+    c.globalAlpha = 0.6 * k;
+    const gs = r * (4 + 4 * k);
     c.drawImage(this.sprite(color, false), b[0] - gs / 2, b[1] - gs / 2, gs, gs);
     c.globalAlpha = 1;
     c.globalCompositeOperation = "source-over";
-    let n = BALL_RATE * dt;
+    let n = BALL_RATE * k * dt;
     while (n > 0) {
       if (n < 1 && Math.random() > n) break;
       n -= 1;
@@ -215,7 +225,7 @@ export class HandFire {
   }
 
   hand(c, p, color, flash, dt, v) {
-    const app = this.app, video = app.video;
+    const app = this.app, video = app.video, k = this.heat;
     const L = Math.hypot(p[9][0] - p[0][0], p[9][1] - p[0][1]); // wrist to middle knuckle, px
     if (L < 8) return;
     // the hand's box on screen, padded for the mask's width and blur
@@ -253,12 +263,12 @@ export class HandFire {
       g.setTransform(1, 0, 0, 1, 0, 0);
       // tint: the player's colour with the camera's light and shade, lifted a little
       g.globalCompositeOperation = "color";
-      g.globalAlpha = 0.7; // some of the skin's own colour shows through
+      g.globalAlpha = 0.7 * k; // some of the skin's own colour shows through
       g.fillStyle = `rgb(${color})`;
       g.fillRect(0, 0, cw, ch);
       g.globalAlpha = 1;
       g.globalCompositeOperation = "screen";
-      g.fillStyle = `rgba(${color},${0.1 + 0.25 * flash})`;
+      g.fillStyle = `rgba(${color},${(0.1 + 0.25 * flash) * k})`;
       g.fillRect(0, 0, cw, ch);
       g.globalCompositeOperation = "destination-in";
       g.drawImage(this.mask, 0, 0, cw, ch, 0, 0, cw, ch);
@@ -267,15 +277,15 @@ export class HandFire {
       c.globalCompositeOperation = "lighter";
       const glow = this.sprite(color, false), pc = [(p[0][0] + p[9][0]) / 2, (p[0][1] + p[9][1]) / 2];
       const gs = L * (3 + 2.5 * flash);
-      c.globalAlpha = 0.25 + 0.4 * flash;
+      c.globalAlpha = (0.25 + 0.4 * flash) * k;
       c.drawImage(glow, pc[0] - gs / 2, pc[1] - gs / 2, gs, gs);
-      c.globalAlpha = 1;
+      c.globalAlpha = k; // the lit hand fades in over the dimmed video
       c.globalCompositeOperation = "source-over";
       c.drawImage(this.layer, 0, 0, cw, ch, x0, y0, cw / RES, ch / RES);
       c.globalCompositeOperation = "lighter";
       const hot = this.sprite(color, true), ts = L * (0.5 + 0.4 * flash);
-      c.globalAlpha = 0.3 + 0.3 * flash;
-      for (const k of TIPS) c.drawImage(hot, p[k][0] - ts / 2, p[k][1] - ts / 2, ts, ts);
+      c.globalAlpha = (0.3 + 0.3 * flash) * k;
+      for (const t of TIPS) c.drawImage(hot, p[t][0] - ts / 2, p[t][1] - ts / 2, ts, ts);
       c.globalAlpha = 1;
       c.globalCompositeOperation = "source-over";
     }
@@ -284,7 +294,7 @@ export class HandFire {
     for (const k of TIPS) {
       const j = k === 4 ? 3 : k - 1; // the joint below the tip: the finger's direction
       const d = [p[k][0] - p[j][0], p[k][1] - p[j][1]], dl = Math.hypot(...d) || 1;
-      let n = FLAME_RATE * (1 + 2 * flash) * dt;
+      let n = FLAME_RATE * (1 + 2 * flash) * k * dt;
       while (n > 0) {
         if (n < 1 && Math.random() > n) break;
         n -= 1;

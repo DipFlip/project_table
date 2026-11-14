@@ -191,9 +191,11 @@ class HandPong {
     this.flash = [i, now];
     const hard = Math.min(1, norm(this.vel) / (MAX_MM * this.mm * 0.6));
     this.app.sound.play("hit", 0.5 + 0.5 * hard);
-    if (HandFire.on) this.fire.hit(sub(this.ball, mul(normal, this.r)), normal, p.color, hard, this.r);
-    else this.app.fx.burst(sub(this.ball, mul(normal, this.r)), p.color, {
-      n: Math.round(14 + 30 * hard), speed: 150 + 400 * hard, life: 0.45, size: 4, spread: 2.2,
+    // plain sparks while the ball is cold, handing over to fire as the rally heats it up
+    const heat = this.fire.heat;
+    if (heat > 0) this.fire.hit(sub(this.ball, mul(normal, this.r)), normal, p.color, hard, this.r);
+    if (heat < 1) this.app.fx.burst(sub(this.ball, mul(normal, this.r)), p.color, {
+      n: Math.round((14 + 30 * hard) * (1 - heat)), speed: 150 + 400 * hard, life: 0.45, size: 4, spread: 2.2,
       direction: Math.atan2(normal[1], normal[0]), colors: [p.color, [255, 255, 255]],
     });
     this.lastHit[i] = now;
@@ -270,7 +272,7 @@ class HandPong {
       if ((this.ball[1] < f.top + this.r && this.vel[1] < 0) || (this.ball[1] > f.bottom - this.r && this.vel[1] > 0)) {
         this.vel[1] = -this.vel[1];
         this.app.sound.play("wall", 0.6);
-        if (HandFire.on) this.fire.wall(this.ball, [0, Math.sign(this.vel[1])], this.flash ? this.players[this.flash[0]].color : [255, 150, 40], this.r);
+        if (this.fire.heat > 0) this.fire.wall(this.ball, [0, Math.sign(this.vel[1])], this.flash ? this.players[this.flash[0]].color : [255, 150, 40], this.r);
         else this.app.fx.burst(this.ball, [200, 200, 200], { n: 6, speed: 120, life: 0.25, size: 2.5 });
       }
       let hit = false;
@@ -296,9 +298,10 @@ class HandPong {
       const winner = 1 - loser;
       this.score[winner] += 1;
       const goalX = this.players[loser].endX, wc = this.players[winner].color;
-      if (HandFire.on) this.fire.goal([goalX, this.ball[1]], [loser === 0 ? 1 : -1, 0], wc, this.r);
-      else this.app.fx.burst([goalX, this.ball[1]], wc, {
-        n: 60, speed: 500, life: 0.8, size: 5, direction: loser === 0 ? 0 : Math.PI, spread: 2.5,
+      const heat = this.fire.heat;
+      if (heat > 0) this.fire.goal([goalX, this.ball[1]], [loser === 0 ? 1 : -1, 0], wc, this.r);
+      if (heat < 1) this.app.fx.burst([goalX, this.ball[1]], wc, {
+        n: Math.round(60 * (1 - heat)), speed: 500, life: 0.8, size: 5, direction: loser === 0 ? 0 : Math.PI, spread: 2.5,
         colors: [wc, [255, 255, 255]],
       });
       this.app.sound.play("score");
@@ -375,7 +378,7 @@ class HandPong {
     });
 
     if (this.ball) {
-      const n = HandFire.on ? 0 : this.trail.length; // with fire the ball's flames are its trail
+      const n = this.fire.heat > 0 ? 0 : this.trail.length; // once it burns, the ball's flames are its trail
       this.trail.slice(0, n).forEach((q, j) => {
         const k = (j + 1) / n;
         c.fillStyle = `rgb(${120 + 135 * k},${120 + 135 * k},${100 + 130 * k})`;
