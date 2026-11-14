@@ -10,16 +10,18 @@
   canvas { position: fixed; left: 0; top: 0; display: block; } /* sized in px by game.js, like the video */
   video { position: fixed; left: 0; top: 0; width: 0; height: 0; transform: scaleX(-1); object-fit: fill; }
   #start { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center;
-           justify-content: center; gap: 18px; text-align: center; padding: 16px; background: #111; }
+           justify-content: center; gap: 18px; text-align: center; padding: 16px; background: #111; overflow-y: auto; }
   #start h1 { margin: 0; font-size: clamp(32px, 7vw, 72px); }
   #start p { margin: 0; max-width: 640px; line-height: 1.5; color: #bbb; }
-  #start .games { display: flex; flex-wrap: wrap; justify-content: center; gap: 16px; max-width: 900px; }
-  #start button { flex: 1 1 280px; max-width: 420px; display: flex; flex-direction: column; gap: 8px; text-align: left;
+  #start .games { display: flex; flex-wrap: wrap; justify-content: center; gap: 16px; max-width: 920px; }
+  #start button { flex: 1 1 320px; max-width: 440px; display: flex; flex-direction: column; gap: 8px; text-align: left;
                   font: inherit; padding: 18px 20px; border-radius: 12px; border: 0; color: #111; cursor: pointer; }
   #start button b { font-size: 24px; }
   #start button span { font-size: 15px; line-height: 1.45; }
   #start .pong { background: #46dc78; }
   #start .volley { background: #ff9632; }
+  #start .juggle { background: #ffd23c; }
+  #start .color { background: #46c3ff; }
   #start button:disabled { opacity: .5; cursor: default; }
   #err { color: #ff9632; min-height: 1.5em; }
   #report { position: fixed; inset: 0; z-index: 2; display: flex; flex-direction: column; gap: 10px;
@@ -48,6 +50,14 @@
         line between your hands (one hand: level with it across your head; none: just above your head).
         Any number per side; bop the ball up and over the net, a point when it lands on the other side.
         First to 11.</span></button>
+    <button class="juggle" data-game="juggle"><b>Juggling</b>
+      <span>One player, full body. Four coloured platforms on your hands and feet aim towards the opposite hand,
+        and moving sideways shifts that angle left or right. Each ball gets one floor bounce; starts with one
+        ball and adds more until the last ball is lost.</span></button>
+    <button class="color" data-game="color"><b>Colour Juggle</b>
+      <span>One player, one ball. Each hand and foot has its own colour, and the ball changes colour to show
+        which platform must bounce it next. Touching it with the wrong limb (or missing after one floor bounce)
+        is game over!</span></button>
   </div>
   <div id="err"></div>
   <p class="keys">Keys: r new match · v video brightness · z camera zoom · d skeletons (or double-tap) · f fullscreen</p>

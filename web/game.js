@@ -1,5 +1,5 @@
 // Camera games in the browser: Finger Pong (a port of webcam_pong.py + pmd/scenes/hand_pong.py
-// + pong.py, below) and full-body Volleyball (volley.js); the start page picks one.
+// + pong.py, below), full-body Volleyball (volley.js) and Juggling (juggle.js); the start page picks one.
 //
 // The webcam view fills the window (mirrored) and the court is drawn over it. In Finger Pong each player's
 // bouncer is the line between their thumb tip and index tip; the leftmost hand is the left
@@ -12,6 +12,7 @@
 // camera sees past the screen's edges and a hand at the edge is still tracked.
 import { FLAGS, add, sub, mul, dot, norm, perp, clamp, rgb, rand, OneEuro, Sound, Particles, drawText } from "./common.js";
 import { Volleyball } from "./volley.js";
+import { Juggle, ColorJuggle } from "./juggle.js";
 
 const BUNDLE = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.1/vision_bundle.mjs"; // keep tracker.js in step
 const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.1/wasm";
@@ -41,6 +42,14 @@ const JUMP = 0.3; // a hand appearing this far (x screen width) from the last on
 const VIRTUAL_TABLE_MM = 1100; // the screen's width stands for this much table
 const DIM_LEVELS = [0.35, 0.6, 1.0]; // video brightness under the game
 const ZOOMS = [1.25, 1.5, 1.0]; // how much the camera image is enlarged past filling the screen
+// The Juggle games also run the hand landmarker and use a hand's palm for its platform when the
+// body's wrist is near it: steadier than the pose model's wrist up close. ?hands=0 turns it off.
+const HAND_HELP = FLAGS.hands === "0" ? null : {
+  model: HAND_MODEL, options: {
+    runningMode: "VIDEO", numHands: 2,
+    minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.4, minTrackingConfidence: 0.4,
+  },
+};
 const DELEGATES = FLAGS.delegate === "cpu" ? ["CPU"] : ["GPU", "CPU"];
 
 const THUMB_TIP = 4, INDEX_TIP = 8;
@@ -412,12 +421,28 @@ const GAMES = {
       minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.3, minTrackingConfidence: 0.3,
     },
   },
+  juggle: {
+    Scene: Juggle, what: "body", zoom: 2,
+    grab: 1280,
+    task: "pose", model: POSE_MODEL, hands: HAND_HELP, options: {
+      runningMode: "VIDEO", numPoses: 1, // one player: stays on fast ROI tracking without hunting for extra bodies
+      minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.3, minTrackingConfidence: 0.3,
+    },
+  },
+  color: {
+    Scene: ColorJuggle, what: "body", zoom: 2,
+    grab: 1280,
+    task: "pose", model: POSE_MODEL, hands: HAND_HELP, options: {
+      runningMode: "VIDEO", numPoses: 1,
+      minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.3, minTrackingConfidence: 0.3,
+    },
+  },
 };
 
 // --- tracking -----------------------------------------------------------------------
 // Both trackers take a camera frame and resolve to { found: [[x, y, visibility] per landmark,
 // per hand or body, normalised and unmirrored], ms: detection time, grabMs: time to copy the
-// frame for the worker }. `where` says which one runs and on what (GPU or CPU) for the stats.
+// frame for the worker, hands: the same for hands when the game asks for them alongside bodies, else null }. `where` says which one runs and on what (GPU or CPU) for the stats.
 
 class WorkerTracker {
   static create(game) {
@@ -425,7 +450,7 @@ class WorkerTracker {
     return new Promise((resolve, reject) => {
       w.onerror = (e) => reject(new Error(e.message || "worker failed to load"));
       w.onmessage = (e) => (e.data.type === "ready" ? resolve(new WorkerTracker(w, e.data.delegate, game.grab)) : reject(new Error(e.data.message)));
-      w.postMessage({ type: "init", wasm: WASM, task: game.task, model: game.model, options: game.options, delegates: DELEGATES });
+      w.postMessage({ type: "init", wasm: WASM, task: game.task, model: game.model, options: game.options, hands: game.hands, delegates: DELEGATES });
     });
   }
   constructor(worker, delegate, grab) {
@@ -438,7 +463,7 @@ class WorkerTracker {
     worker.onmessage = (e) => {
       const done = this.pending;
       this.pending = null;
-      done?.(e.data.type === "found" ? e.data : { found: [], ms: 0 });
+      done?.(e.data.type === "found" ? e.data : { found: [], hands: null, ms: 0 });
     };
   }
   async detect(video, t) {
@@ -466,21 +491,25 @@ class PageTracker {
     const vision = await FilesetResolver.forVisionTasks(WASM);
     for (const delegate of delegates) {
       try {
-        return new PageTracker(await Task.createFromOptions(vision, { ...game.options, baseOptions: { modelAssetPath: game.model, delegate } }), delegate);
+        const base = { modelAssetPath: game.model, delegate };
+        const hands = game.hands ? await HandLandmarker.createFromOptions(vision, { ...game.hands.options, baseOptions: { modelAssetPath: game.hands.model, delegate } }) : null;
+        return new PageTracker(await Task.createFromOptions(vision, { ...game.options, baseOptions: base }), delegate, hands);
       } catch (e) {
         if (delegate === delegates.at(-1)) throw e;
       }
     }
   }
-  constructor(landmarker, delegate) {
+  constructor(landmarker, delegate, handLandmarker = null) {
     this.delegate = delegate;
     this.where = `page ${delegate}`;
     this.landmarker = landmarker;
+    this.handLandmarker = handLandmarker;
   }
   async detect(video, t) {
     const t0 = performance.now();
     const res = this.landmarker.detectForVideo(video, t);
-    return { found: res.landmarks.map((lm) => lm.map((p) => [p.x, p.y, p.visibility ?? 1])), ms: performance.now() - t0, grabMs: 0 };
+    const hands = this.handLandmarker ? this.handLandmarker.detectForVideo(video, t).landmarks.map((lm) => lm.map((p) => [p.x, p.y, 1])) : null;
+    return { found: res.landmarks.map((lm) => lm.map((p) => [p.x, p.y, p.visibility ?? 1])), hands, ms: performance.now() - t0, grabMs: 0 };
   }
 }
 
@@ -494,11 +523,15 @@ class Stats {
     this.history = [];
     this.camKnown = false; // camera frames are counted where requestVideoFrameCallback exists
   }
-  zero() { return { draw: 0, cam: 0, results: 0, both: 0, detect: 0, detectMax: 0, grab: 0, hits: 0 }; }
-  result(ms, grabMs, nHands) {
+  zero() { return { draw: 0, cam: 0, results: 0, both: 0, detect: 0, detectMax: 0, grab: 0, hits: 0, palms: 0 }; }
+  result(ms, grabMs, nHands, hands = null) {
     const a = this.acc;
     a.results++;
     if (nHands >= 2) a.both++;
+    if (hands) {
+      this.palmsOn = true;
+      a.palms += hands.length;
+    }
     a.detect += ms;
     a.detectMax = Math.max(a.detectMax, ms);
     a.grab += grabMs;
@@ -508,7 +541,7 @@ class Stats {
     if (now - this.t < 1) return;
     const s = now - this.t, a = this.acc, n = Math.max(a.results, 1);
     this.last = { draw: a.draw / s, cam: a.cam / s, hands: a.results / s, both: a.both / n, detect: a.detect / n,
-      detectMax: a.detectMax, grab: a.grab / n, hits: a.hits, t: now - this.start, ...extra };
+      detectMax: a.detectMax, grab: a.grab / n, hits: a.hits, palms: a.palms / n, t: now - this.start, ...extra };
     this.history.push(this.last);
     if (this.history.length > 300) this.history.shift();
     this.t = now;
@@ -526,7 +559,7 @@ class Stats {
     if (!l) return;
     const lines = [
       `${(now - this.start).toFixed(0)} s   draw ${l.draw.toFixed(0)} fps   camera ${this.camKnown ? l.cam.toFixed(0) + " fps" : "?"}`,
-      `tracking ${l.hands.toFixed(0)} Hz, 2+ found ${(l.both * 100).toFixed(0)}%`,
+      `tracking ${l.hands.toFixed(0)} Hz, 2+ found ${(l.both * 100).toFixed(0)}%${this.palmsOn ? `, palms ${l.palms.toFixed(1)}` : ""}`,
       `${where}: grab ${l.grab.toFixed(0)} + detect ${l.detect.toFixed(0)} ms (max ${l.detectMax.toFixed(0)})`,
       `particles ${l.particles}   sounds ${l.sounds}`,
       "tap here for a report to send",
@@ -650,11 +683,12 @@ class CamApp {
     this.lastVideoTime = v.currentTime;
     const t = performance.now();
     this.busy = true;
-    this.tracker.detect(v, t).then(({ found, ms, grabMs }) => {
+    this.tracker.detect(v, t).then(({ found, hands, ms, grabMs }) => {
       this.busy = false;
-      this.stats.result(ms, grabMs, found.length);
+      this.stats.result(ms, grabMs, found.length, hands);
       // mirrored like the video
-      this.frame = { found: found.map((lm) => lm.map((p) => [1 - p[0], p[1], p[2]])), t: t / 1000, n: ++this.frameCount };
+      const mirror = (lm) => lm.map((p) => [1 - p[0], p[1], p[2]]);
+      this.frame = { found: found.map(mirror), hands: hands ? hands.map(mirror) : null, t: t / 1000, n: ++this.frameCount };
     });
   }
 
@@ -692,7 +726,7 @@ class CamApp {
     const v = this.video;
     const text = this.stats.report([
       `${navigator.userAgent}`,
-      `${this.game.Scene.name}${this.game.task === "pose" ? ` (${POSE} model)` : ""}, screen ${this.W}x${this.H} dpr ${devicePixelRatio}, camera ${v.videoWidth}x${v.videoHeight}, tracking ${this.tracker.where} (frames ${this.tracker.size || "as captured"}), ` +
+      `${this.game.Scene.name}${this.game.task === "pose" ? ` (${POSE} model${this.game.hands ? " + hands" : ""})` : ""}, screen ${this.W}x${this.H} dpr ${devicePixelRatio}, camera ${v.videoWidth}x${v.videoHeight}, tracking ${this.tracker.where} (frames ${this.tracker.size || "as captured"}), ` +
         `zoom ${ZOOMS[this.zoom]}, flags ${location.search || "none"}`,
     ]);
     const box = document.getElementById("report");

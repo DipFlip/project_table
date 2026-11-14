@@ -71,8 +71,8 @@ On macOS the terminal needs camera access (System Settings > Privacy & Security 
 
 ### In the browser
 `web/` is the same game as a static page (JS port of `hand_pong.py`, MediaPipe Tasks
-Vision running in the page, nothing uploaded), plus a full-body Volleyball; the start page
-picks one. Live at https://finger-gun-pong.vercel.app.
+Vision running in the page, nothing uploaded), plus full-body Volleyball, Juggling and Colour Juggle;
+the start page picks one. Live at https://finger-gun-pong.vercel.app.
 
 Volleyball (`web/volley.js`) is made for a projector with the laptop camera watching the
 players: side view, gravity, a net and bouncy back walls, any number of players per side
@@ -80,6 +80,15 @@ players: side view, gravity, a net and bouncy back walls, any number of players 
 view it's level with it and mirrored across your head, with none it sits just above your
 head. A ball above the screen shows as an arrow on the top edge; it scores for the other
 side when it lands. First to 11.
+
+Juggling (`web/juggle.js`) uses the same full-body pose tracking and side-view gravity for
+one player, with four uniquely coloured platforms on both hands and both feet that aim
+towards the opposite hand and shift left or right as you move sideways. Each ball is allowed
+one floor bounce between touches; Juggling ramps up from one ball until the last ball is
+lost, while Colour Juggle keeps one ball that changes colour to show which limb must bounce
+it next (any wrong-limb touch is game over). Both also run MediaPipe's hand landmarker on each
+frame: a hand found near a body's wrist puts that platform on its palm, which is steadier than
+the pose wrist up close (`?hands=0` turns it off; the `?debug=1` panel counts palms per frame).
 
     python3 -m http.server 8517 -d web             # local: http://localhost:8517
     cd web && npx vercel deploy --prod             # redeploy from CLI
