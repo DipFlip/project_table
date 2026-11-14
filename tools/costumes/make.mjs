@@ -10,6 +10,7 @@
 // Shapes are signed distance fields: anti-aliased edges, ink outlines and a soft rounded shading
 // from the distance to the edge, so the parts read as smooth rounded forms rather than flat blocks.
 import fs from "node:fs";
+import zlib from "node:zlib";
 import path from "node:path";
 import agPsd from "ag-psd";
 import { SIZE, REST as J, BONES, REST_SIDE as K, SIDE_BONES, BALL } from "../../web/rest.js";
@@ -228,9 +229,53 @@ function writeCostume(name, front, side, reference = false) {
     for (let c = 0; c < 3; c++) comp[i + c] = a > 0 ? Math.round((acc[i + c] / a) * 255) : 0;
     comp[i + 3] = Math.round(a * 255);
   }
+  if (reference) {
+    // pictures of the template's figure for web/costumes/README.md, at half size
+    savePng(comp, [100, 0, 1000, 1536], path.join(OUT, "template-front.png"));
+    savePng(comp, [1280, 0, 1800, 1536], path.join(OUT, "template-side.png"));
+  }
   const psd = { width: W, height: H, children, imageData: { width: W, height: H, data: comp } };
   fs.writeFileSync(path.join(OUT, `${name}.psd`), Buffer.from(agPsd.writePsd(psd, { generateThumbnail: false })));
   console.log(`${name}.psd: ${front.map((l) => l.name).join(", ")} | side: ${side.map((l) => l.name).join(", ")}`);
+}
+
+// a region [x0, y0, x1, y1] of straight-alpha RGBA pixels, halved, as a PNG file
+function savePng(rgba, [x0, y0, x1, y1], file) {
+  const w = (x1 - x0) >> 1, h = (y1 - y0) >> 1, raw = Buffer.alloc((w * 4 + 1) * h);
+  for (let y = 0; y < h; y++) {
+    raw[y * (w * 4 + 1)] = 0;
+    for (let x = 0; x < w; x++) {
+      // average 2 x 2 pixels, weighting colour by alpha
+      let r = 0, g = 0, b = 0, a = 0;
+      for (const [dx, dy] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+        const i = ((y0 + 2 * y + dy) * W + x0 + 2 * x + dx) * 4, k = rgba[i + 3];
+        r += rgba[i] * k; g += rgba[i + 1] * k; b += rgba[i + 2] * k; a += k;
+      }
+      const o = y * (w * 4 + 1) + 1 + x * 4;
+      raw[o] = a ? r / a : 0; raw[o + 1] = a ? g / a : 0; raw[o + 2] = a ? b / a : 0; raw[o + 3] = a / 4;
+    }
+  }
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  const crc = (buf) => {
+    let c = 0xffffffff;
+    for (const v of buf) c = crcTable[(c ^ v) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4), body = Buffer.concat([Buffer.from(type), data]), c = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    c.writeUInt32BE(crc(body));
+    return Buffer.concat([len, body, c]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr.set([8, 6, 0, 0, 0], 8); // 8-bit RGBA
+  fs.writeFileSync(file, Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", zlib.deflateSync(raw, { level: 9 })), chunk("IEND", Buffer.alloc(0))]));
 }
 
 // the hidden guide layer: bones in pink, joints in cyan, the head's tracked size as a ring
@@ -293,8 +338,9 @@ function template() {
   const torso = L("torso").paint(torsoShape(), { fill: skin, thick: 90 });
   const arms = LIMBS.map((sd) => L(`arm_${sd.s.toLowerCase()}`)
     .limb(blend(16, chain(18, [add(sd.sh, [sd.out * -14, 6]), sd.el, sd.wr], [44, 32, 25]), handShape(sd, 26, 40), thumb(sd, 12)), sd.sh, sd.el, { fill: skin, thick: 36 }));
+  // the neck's end tucks under the torso without an outline, like the limbs'
   const head = L("head")
-    .paint(blend(8, capsule([512, 300], [512, 372], 32), blend(14, ellipse([512, 205], 88, 102), ellipse([512, 262], 62, 52)), ellipse(J.earL, 15, 25), ellipse(J.earR, 15, 25)), { fill: skin, thick: 70 });
+    .limb(blend(8, capsule([512, 300], [512, 372], 32), blend(14, ellipse([512, 205], 88, 102), ellipse([512, 262], 62, 52)), ellipse(J.earL, 15, 25), ellipse(J.earR, 15, 25)), [512, 348], [512, 200], { fill: skin, thick: 70 });
   return { back: new Layer("back"), legs, torso, arms, head };
 }
 
@@ -534,8 +580,8 @@ const SIDE_ART = {
   template() {
     const skin = hex("#d9d3ca");
     const torso = new Layer("torso").paint(sideTorso(), { fill: skin, thick: 80 });
-    const head = new Layer("head").paint(blend(8, capsule([C - 14, 300], [C - 14, 372], 32),
-      blend(16, ellipse([C - 4, 205], 94, 102), ellipse([C + 40, 266], 48, 46), circle(K.nose, 13)), ellipse(K.ear, 14, 24)), { fill: skin, thick: 70 });
+    const head = new Layer("head").limb(blend(8, capsule([C - 14, 300], [C - 14, 372], 32),
+      blend(16, ellipse([C - 4, 205], 94, 102), ellipse([C + 40, 266], 48, 46), circle(K.nose, 13)), ellipse(K.ear, 14, 24)), [C - 14, 352], [C - 14, 200], { fill: skin, thick: 70 });
     return { back: new Layer("back"), torso, head };
   },
   astronaut() {
