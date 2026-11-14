@@ -18,7 +18,7 @@ const LEAD_MAX = 0.08; // s: move the mask on by the hand's speed for at most th
 const FLAME_RATE = 28; // flames per fingertip per second
 const MAX_FLAMES = 900;
 const MAX_SMOKE = 250;
-const SMOKE_ODDS = 0.3; // chance a dying flame leaves a puff of smoke
+const SMOKE_ODDS = 0.12; // chance a dying flame leaves a puff of smoke
 const BALL_FIRE = [255, 150, 40]; // the ball's flame before anyone has hit it
 const BALL_RATE = 120; // ball flames per second
 const FLASH_S = 0.45; // a hit's glow fades over this long
@@ -139,33 +139,27 @@ export class HandFire {
 
   // the game's events, in court px: a bouncer hit (normal: away from the bouncer), a wall bounce, a goal
   hit(at, normal, color, hard, r) {
-    this.blast(this.pt(at), this.dir(normal), 1.1, r, color, { flames: Math.round(10 + 14 * hard), sparks: Math.round(14 + 26 * hard), smoke: 3, speed: 0.6 + 0.6 * hard });
+    this.blast(this.pt(at), this.dir(normal), 1.1, r, color, { flames: Math.round(10 + 14 * hard), sparks: Math.round(14 + 26 * hard), smoke: 1, speed: 0.6 + 0.6 * hard });
   }
   wall(at, normal, color, r) {
     this.blast(this.pt(at), this.dir(normal), 1.2, r, color, { flames: 3, sparks: 7, speed: 0.5 });
   }
   goal(at, d, color, r) {
-    this.blast(this.pt(at), this.dir(d), 1.3, r, color, { flames: 45, sparks: 45, smoke: 12, speed: 1.4 });
+    this.blast(this.pt(at), this.dir(d), 1.3, r, color, { flames: 45, sparks: 45, smoke: 5, speed: 1.4 });
   }
 
   // the hand's outline, in screen px, on a context already transformed to the right place
-  shape(g, p, L, wrist) {
+  shape(g, p, L) {
     g.lineCap = g.lineJoin = "round";
     g.beginPath();
     g.moveTo(...p[PALM[0]]);
     for (const k of PALM) g.lineTo(...p[k]);
     g.closePath();
-    g.lineWidth = 0.38 * L;
+    g.lineWidth = 0.26 * L;
     g.fill();
     g.stroke();
-    // the heel of the hand and the wrist, below the wrist landmark
-    g.lineWidth = 0.6 * L;
-    g.beginPath();
-    g.moveTo((p[0][0] + p[9][0]) / 2, (p[0][1] + p[9][1]) / 2);
-    g.lineTo(...wrist);
-    g.stroke();
     FINGERS.forEach((f, j) => {
-      g.lineWidth = (j === 0 ? 0.32 : j === 4 ? 0.24 : 0.28) * L;
+      g.lineWidth = (j === 0 ? 0.26 : j === 4 ? 0.19 : 0.22) * L;
       g.beginPath();
       g.moveTo(...p[j === 0 ? 1 : f[0]]);
       for (const k of f) g.lineTo(...p[k]);
@@ -224,12 +218,10 @@ export class HandFire {
     const app = this.app, video = app.video;
     const L = Math.hypot(p[9][0] - p[0][0], p[9][1] - p[0][1]); // wrist to middle knuckle, px
     if (L < 8) return;
-    // a little past the wrist landmark, away from the fingers: covers the heel of the hand and the wrist
-    const wrist = [p[0][0] + (p[0][0] - p[9][0]) * 0.4, p[0][1] + (p[0][1] - p[9][1]) * 0.4];
     // the hand's box on screen, padded for the mask's width and blur
-    const pad = 0.45 * L;
+    const pad = 0.35 * L;
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const [x, y] of [...p, wrist]) {
+    for (const [x, y] of p) {
       x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
     }
     x0 = Math.max(0, Math.floor(x0 - pad)); y0 = Math.max(0, Math.floor(y0 - pad));
@@ -249,8 +241,8 @@ export class HandFire {
       m.clearRect(0, 0, cw + 2, ch + 2);
       m.setTransform(RES, 0, 0, RES, -x0 * RES, -y0 * RES);
       m.fillStyle = m.strokeStyle = m.shadowColor = "white";
-      m.shadowBlur = 0.12 * L * RES;
-      this.shape(m, p, L, wrist);
+      m.shadowBlur = 0.1 * L * RES;
+      this.shape(m, p, L);
       // the camera pixels under the box (the video is mirrored on screen; screen = (fw - u) * scale + offset)
       const s = app.scale, [ox, oy] = app.offset;
       const u0 = app.fw - (x1 - ox) / s, u1 = app.fw - (x0 - ox) / s, v0 = (y0 - oy) / s, v1 = (y1 - oy) / s;
@@ -261,10 +253,12 @@ export class HandFire {
       g.setTransform(1, 0, 0, 1, 0, 0);
       // tint: the player's colour with the camera's light and shade, lifted a little
       g.globalCompositeOperation = "color";
+      g.globalAlpha = 0.7; // some of the skin's own colour shows through
       g.fillStyle = `rgb(${color})`;
       g.fillRect(0, 0, cw, ch);
+      g.globalAlpha = 1;
       g.globalCompositeOperation = "screen";
-      g.fillStyle = `rgba(${color},${0.18 + 0.25 * flash})`;
+      g.fillStyle = `rgba(${color},${0.1 + 0.25 * flash})`;
       g.fillRect(0, 0, cw, ch);
       g.globalCompositeOperation = "destination-in";
       g.drawImage(this.mask, 0, 0, cw, ch, 0, 0, cw, ch);
@@ -319,7 +313,7 @@ export class HandFire {
         q.x += q.vx * dt;
         q.y += q.vy * dt;
         const k = q.age / q.life, s = q.size * (1 + 1.8 * k);
-        c.globalAlpha = 0.28 * Math.min(1, k * 6) * (1 - k);
+        c.globalAlpha = 0.2 * Math.min(1, k * 6) * (1 - k);
         c.drawImage(puff, q.x - s / 2, q.y - s / 2, s, s);
       }
       f.length = n;
