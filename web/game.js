@@ -14,6 +14,7 @@ import { Costumes } from "./rig.js";
 import { FLAGS, add, sub, mul, dot, norm, perp, clamp, rgb, rand, OneEuro, Sound, Particles, drawText } from "./common.js";
 import { Volleyball } from "./volley.js";
 import { Juggle, ColorJuggle } from "./juggle.js";
+import { HandFire } from "./handfire.js";
 
 const BUNDLE = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.1/vision_bundle.mjs"; // keep tracker.js in step
 const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.1/wasm";
@@ -95,6 +96,7 @@ class HandPong {
     this.players = [new Player("left", this.field, 0), new Player("right", this.field, 1)];
     this.hands = [new Hand(), new Hand()];
     this.frameN = -1;
+    this.fire = new HandFire(app); // ?fx=fire or h: tinted hands with flames
     this.newMatch(app.now);
   }
 
@@ -188,7 +190,8 @@ class HandPong {
     this.flash = [i, now];
     const hard = Math.min(1, norm(this.vel) / (MAX_MM * this.mm * 0.6));
     this.app.sound.play("hit", 0.5 + 0.5 * hard);
-    this.app.fx.burst(sub(this.ball, mul(normal, this.r)), p.color, {
+    if (HandFire.on) this.fire.hit(sub(this.ball, mul(normal, this.r)), normal, p.color, hard, this.r);
+    else this.app.fx.burst(sub(this.ball, mul(normal, this.r)), p.color, {
       n: Math.round(14 + 30 * hard), speed: 150 + 400 * hard, life: 0.45, size: 4, spread: 2.2,
       direction: Math.atan2(normal[1], normal[0]), colors: [p.color, [255, 255, 255]],
     });
@@ -266,7 +269,8 @@ class HandPong {
       if ((this.ball[1] < f.top + this.r && this.vel[1] < 0) || (this.ball[1] > f.bottom - this.r && this.vel[1] > 0)) {
         this.vel[1] = -this.vel[1];
         this.app.sound.play("wall", 0.6);
-        this.app.fx.burst(this.ball, [200, 200, 200], { n: 6, speed: 120, life: 0.25, size: 2.5 });
+        if (HandFire.on) this.fire.wall(this.ball, [0, Math.sign(this.vel[1])], this.flash ? this.players[this.flash[0]].color : [255, 150, 40], this.r);
+        else this.app.fx.burst(this.ball, [200, 200, 200], { n: 6, speed: 120, life: 0.25, size: 2.5 });
       }
       let hit = false;
       for (let i = 0; i < 2 && !hit; i++) if (paddles[i]) hit = this.touch(i, paddles[i], now);
@@ -291,7 +295,8 @@ class HandPong {
       const winner = 1 - loser;
       this.score[winner] += 1;
       const goalX = this.players[loser].endX, wc = this.players[winner].color;
-      this.app.fx.burst([goalX, this.ball[1]], wc, {
+      if (HandFire.on) this.fire.goal([goalX, this.ball[1]], [loser === 0 ? 1 : -1, 0], wc, this.r);
+      else this.app.fx.burst([goalX, this.ball[1]], wc, {
         n: 60, speed: 500, life: 0.8, size: 5, direction: loser === 0 ? 0 : Math.PI, spread: 2.5,
         colors: [wc, [255, 255, 255]],
       });
@@ -335,6 +340,8 @@ class HandPong {
       this.text(c, big, String(this.score[i]), [f.centerX - p.dir * f.width * 0.08, f.top + f.height * 0.1], p.color);
     });
 
+    if (HandFire.on) this.fire.draw(c, this, now);
+
     const frame = this.app.frame;
     if (frame && this.app.debug) {
       c.strokeStyle = "white";
@@ -367,8 +374,8 @@ class HandPong {
     });
 
     if (this.ball) {
-      const n = this.trail.length;
-      this.trail.forEach((q, j) => {
+      const n = HandFire.on ? 0 : this.trail.length; // with fire the ball's flames are its trail
+      this.trail.slice(0, n).forEach((q, j) => {
         const k = (j + 1) / n;
         c.fillStyle = `rgb(${120 + 135 * k},${120 + 135 * k},${100 + 130 * k})`;
         c.beginPath();
