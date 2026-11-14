@@ -3,6 +3,7 @@
 // In a game, holding both arms up in an O above the head (body games) or an OK sign (Finger Pong)
 // goes back to the menu, and so does nobody being in view for IDLE_S.
 import { add, sub, mul, norm, clamp, rgb, drawText } from "./common.js";
+import { palmPoints, matchPalms } from "./palms.js";
 
 const HOVER_S = 1.5; // hovering a hand over a game this long picks it
 const O_HOLD_S = 3; // arms up in an O above the head this long: back to the menu
@@ -10,6 +11,8 @@ const OK_HOLD_S = 2; // an OK sign this long (Finger Pong): back to the menu
 const GAP_S = 0.3; // a gesture survives tracking blinks this short
 const IDLE_S = 30; // nobody in view this long: back to the menu
 const VIS = 0.5;
+const WRIST_VIS = 0.28; // a wrist seen this well still places the cursor (the games keep hands down to this)
+const EXTEND = 0.85; // wrist lost, elbow and shoulder seen: the hand is this far past the elbow (x upper arm)
 
 export const CARDS = [
   { key: "pong", name: "Finger Pong", color: [70, 220, 120], text: "Two players by the camera: pinch to make a paddle" },
@@ -38,12 +41,25 @@ export class Menu {
     return CARDS.map((card, i) => ({ ...card, x: m + i * (w + gap), y, w, h }));
   }
 
-  // every hand in view: pose wrists, and the hand landmarker's palms when it sees fingers
+  // every hand in view, the way the games find them: the hand landmarker's palm matched to a
+  // body's wrist when it sees fingers, else the pose wrist, else straight on past the elbow when
+  // the wrist is lost; palms with no body (someone close to the camera) count too
   hands() {
     const f = this.app.frame, out = [];
     if (!f) return out;
-    for (const body of f.found) for (const j of [15, 16]) if (body[j][2] >= VIS) out.push(this.app.toCourt(body[j]));
-    for (const h of f.hands || []) out.push(this.app.toCourt(palmOf(h)));
+    const court = (q) => this.app.toCourt(q);
+    const arms = [];
+    for (const body of f.found) {
+      const P = body.map((q) => [...court(q), q[2]]);
+      for (const [sh, el, wr] of [[11, 13, 15], [12, 14, 16]]) arms.push({ P, sh, el, wr, wrist: P[wr], elbow: P[el], fix: { had: false, off: null } });
+    }
+    const palms = palmPoints(f.hands, court), matched = matchPalms(arms, palms, this.app.H);
+    arms.forEach(({ P, sh, el, wr }, i) => {
+      if (matched[i]) out.push(matched[i]);
+      else if (P[wr][2] >= WRIST_VIS) out.push(P[wr].slice(0, 2));
+      else if (P[el][2] >= VIS && P[sh][2] >= VIS) out.push(add(P[el], mul(sub(P[el], P[sh]), EXTEND)).slice(0, 2));
+    });
+    for (const p of palms) if (!matched.includes(p.at)) out.push(p.at);
     return out;
   }
 
