@@ -2,12 +2,14 @@
 // (costumes/template.psd, joints in rest.js). Every layer becomes a mesh whose vertices are weighted
 // to the bones of its part (smooth falloff, so joints bend softly instead of creasing), and each
 // frame the bones are moved to the player's tracked pose and the meshes are skinned and drawn with
-// WebGL. Layers draw in the PSD's order; hidden layers and "guide" are skipped. The c key cycles
-// the costume; ?skin=astronaut (werewolf, robot, farmer, template, mix) starts with one.
+// WebGL. Layers draw in the PSD's order; hidden layers and "guide" are skipped. A costume's "side"
+// group holds a side view (facing right, mirrored for players facing left), swapped in when a
+// player turns side-on. The c key cycles the costume; ?skin=astronaut (werewolf, robot, farmer,
+// mix) starts with one. Drawing a new one: costumes/README.md.
 import { add, sub, mul, norm, OneEuro } from "./common.js";
-import { SIZE, REST, BONES, PARTS } from "./rest.js";
+import { REST, BONES, PARTS, REST_SIDE, SIDE_BONES, SIDE_PARTS, SIDE_CENTER } from "./rest.js";
 
-export const SKINS = ["none", "astronaut", "werewolf", "robot", "farmer", "template", "mix"];
+export const SKINS = ["none", "astronaut", "werewolf", "robot", "farmer", "mix"];
 const CAST = ["astronaut", "werewolf", "robot", "farmer"];
 const AG_PSD = "https://cdn.jsdelivr.net/npm/ag-psd@31.0.3/dist/bundle.js"; // same version as tools/costumes
 const VIS = 0.5; // landmark visibility that counts a joint as tracked
@@ -16,6 +18,9 @@ const SAME = 0.25; // a body this close (x screen width) to one drawn last frame
 const GRID = 12; // mesh cell size on the template, px
 const SOFT = 10; // px added to every bone distance: how gently weights blend near a joint
 const FALLOFF = 4; // weight = 1 / (distance + SOFT)^FALLOFF, then the strongest 3 kept
+// turning: shoulder width over torso length, as a share of the front view's; below SIDE_IN the
+// player counts as side-on (about 60 degrees turned), back above SIDE_OUT
+const SIDE_IN = 0.48, SIDE_OUT = 0.62;
 
 // joint -> MediaPipe pose landmark(s) (an array is their midpoint)
 const LANDMARK = {
@@ -27,9 +32,19 @@ const PARENT = {
   pelvis: "chest", head: "chest", upperL: "chest", foreL: "upperL", handL: "foreL", upperR: "chest", foreR: "upperR", handR: "foreR",
   thighL: "pelvis", shinL: "thighL", footL: "shinL", thighR: "pelvis", shinR: "thighR", footR: "shinR",
 };
+const SIDE_PARENT = {
+  head: "spine", upperN: "spine", foreN: "upperN", handN: "foreN", upperF: "spine", foreF: "upperF", handF: "foreF",
+  thighN: "spine", shinN: "thighN", footN: "shinN", thighF: "spine", shinF: "thighF", footF: "shinF",
+};
 const BONE_NAMES = Object.keys(BONES);
+const SIDE_NAMES = Object.keys(SIDE_BONES);
 const REST_SHOULDERS = norm(sub(REST.shR, REST.shL));
 const REST_TORSO = norm(sub(mul(add(REST.hipL, REST.hipR), 0.5), mul(add(REST.shL, REST.shR), 0.5)));
+const REST_NECK = mul(add(REST.shL, REST.shR), 0.5)[1] - mul(add(REST.earL, REST.earR), 0.5)[1];
+const SIDE_TORSO = norm(sub(REST_SIDE.hip, REST_SIDE.sh));
+const SIDE_HEAD = norm(sub(REST_SIDE.nose, REST_SIDE.ear));
+// a side-view rest joint, mirrored for a player facing left
+const restSide = (name, facing) => (facing > 0 ? REST_SIDE[name] : [2 * SIDE_CENTER - REST_SIDE[name][0], REST_SIDE[name][1]]);
 
 const distToSeg = (p, a, b) => {
   const ab = sub(b, a), t = Math.max(0, Math.min(1, ((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1]) / ((ab[0] ** 2 + ab[1] ** 2) || 1)));
@@ -47,20 +62,26 @@ async function readPsd(url) {
   return agPsd.readPsd(buf, { useImageData: true, skipCompositeImageData: true, skipThumbnail: true, skipLinkedFilesData: true });
 }
 
-// PSD layers (groups flattened, bottom to top) that belong to a part, by their own or a group's name
-function partLayers(nodes, inherited = null, out = []) {
+// PSD layers (groups flattened, bottom to top) that belong to a part, by their own or a group's
+// name; the top level is the front view, the "side" group the side view
+const firstWord = (n) => (n.name || "").trim().toLowerCase().split(/\s+/)[0];
+function partLayers(nodes, parts, inherited = null, out = []) {
   for (const n of nodes || []) {
-    if (n.hidden) continue;
-    const word = (n.name || "").trim().toLowerCase().split(/\s+/)[0];
-    const part = PARTS[word] ? word : inherited;
-    if (n.children) partLayers(n.children, part, out);
+    // the template's reference mannequin is for painting over, not for the game
+    if (n.hidden || (n.children && firstWord(n) === "template") || (parts === PARTS && n.children && firstWord(n) === "side")) continue;
+    const word = firstWord(n);
+    const part = parts[word] ? word : inherited;
+    if (n.children) partLayers(n.children, parts, part, out);
     else if (part && n.imageData && n.imageData.width > 0) out.push({ part, layer: n });
   }
   return out;
 }
+// the side group, used even while it's hidden in Photoshop to look at the front on its own
+const sideGroup = (nodes) => (nodes || []).find((n) => n.children && firstWord(n) === "side");
 
 // a grid mesh over a layer's painted pixels, each vertex weighted to its part's bones
-function buildMesh(layer, part) {
+function buildMesh(layer, part, side = false) {
+  const [parts, bonesDef, names, rest0] = side ? [SIDE_PARTS, SIDE_BONES, SIDE_NAMES, REST_SIDE] : [PARTS, BONES, BONE_NAMES, REST];
   const { left, top, imageData: img } = layer, w = img.width, h = img.height;
   const cols = Math.ceil(w / GRID), rows = Math.ceil(h / GRID);
   const solid = (cx, cy) => {
@@ -85,7 +106,7 @@ function buildMesh(layer, part) {
     idx.push(a, b, c, b, d, c);
   }
   // weights: inverse distance to each bone of the part (scaled by its reach), strongest 3 kept
-  const bones = Object.entries(PARTS[part]).map(([name, reach]) => ({ i: BONE_NAMES.indexOf(name), a: REST[BONES[name].from], b: REST[BONES[name].to], reach }));
+  const bones = Object.entries(parts[part]).map(([name, reach]) => ({ i: names.indexOf(name), a: rest0[bonesDef[name].from], b: rest0[bonesDef[name].to], reach }));
   const n = rest.length / 2, wb = new Uint8Array(n * 3), ww = new Float32Array(n * 3);
   for (let v = 0; v < n; v++) {
     const p = [rest[2 * v], rest[2 * v + 1]];
@@ -98,6 +119,12 @@ function buildMesh(layer, part) {
     });
   }
   return { rest: new Float32Array(rest), uv: new Float32Array(uv), idx: new Uint16Array(idx), wb, ww, img, out: new Float32Array(rest.length) };
+}
+// the same mesh facing the other way: rest positions mirrored about the side view's centre (the
+// texture, triangles and weights are shared)
+function mirrored(mesh) {
+  const rest = mesh.rest.map((v, i) => (i % 2 ? v : 2 * SIDE_CENTER - v));
+  return { ...mesh, rest, out: new Float32Array(rest.length) };
 }
 
 // --- posing -------------------------------------------------------------------------------
@@ -113,16 +140,73 @@ function boneMap(a0, b0, a, b, across, uniform) {
   return [m00, m01, m10, m11, a[0] - (m00 * a0[0] + m01 * a0[1]), a[1] - (m10 * a0[0] + m11 * a0[1])];
 }
 
+// a tracked joint by name (court px), or null when it isn't seen
+const jointOf = (P) => (name) => {
+  const l = LANDMARK[name];
+  if (Array.isArray(l)) {
+    const [p, q] = l.map((j) => P[j]);
+    return p[2] >= VIS && q[2] >= VIS ? mul(add(p, q), 0.5) : null;
+  }
+  return P[l][2] >= VIS ? P[l].slice(0, 2) : null;
+};
+// the middle of a left/right pair, or the one that's seen
+const midOf = (joint, a, b) => {
+  const p = joint(a), q = joint(b);
+  return p && q ? mul(add(p, q), 0.5) : p || q;
+};
+
+// how far the player has turned from facing the camera (1 = square on, near 0 = side-on), and
+// which way they face on screen (+1 right, -1 left, 0 can't tell)
+function turnOf(P) {
+  const joint = jointOf(P), shL = joint("shL"), shR = joint("shR");
+  if (!shL || !shR) return null;
+  const sh = mul(add(shL, shR), 0.5), hip = midOf(joint, "hipL", "hipR"), ear = midOf(joint, "earL", "earR");
+  const nose = P[0][2] >= VIS ? P[0].slice(0, 2) : null;
+  let len, rest;
+  if (hip) [len, rest] = [norm(sub(hip, sh)), REST_TORSO];
+  else if (ear) [len, rest] = [norm(sub(ear, sh)), REST_NECK];
+  else return null;
+  const t = norm(sub(shR, shL)) / len / (REST_SHOULDERS / rest);
+  const ref = ear || sh, dx = nose ? nose[0] - (ear ? ear[0] : sh[0]) : 0;
+  return { t, facing: Math.abs(dx) > 0.06 * len ? Math.sign(dx) : 0, ref };
+}
+
+// the side view's bone maps for a player facing `facing` (+1 right): near limbs are the player's
+// left when they face right (their left side is towards the camera), right when they face left
+function poseSide(P, facing) {
+  const joint = jointOf(P), [N, F] = facing > 0 ? ["L", "R"] : ["R", "L"];
+  const live = (spec) => {
+    if (spec === "shMid") return midOf(joint, "shL", "shR");
+    if (spec === "hipMid") return midOf(joint, "hipL", "hipR");
+    if (spec === "nose") return P[0][2] >= VIS ? P[0].slice(0, 2) : null;
+    const base = spec.slice(0, -1), side = spec.endsWith("N") ? N : F;
+    return joint(base + side);
+  };
+  const sh = live("shMid");
+  if (!sh) return null;
+  const ear = live("earN") || midOf(joint, "earL", "earR"), nose = live("nose");
+  let hip = live("hipMid"), size;
+  if (hip) size = (0.85 * norm(sub(hip, sh))) / SIDE_TORSO;
+  else if (ear && nose) size = norm(sub(nose, ear)) / SIDE_HEAD;
+  else return null;
+  if (!hip) hip = add(sh, [0, SIDE_TORSO * size]);
+  const maps = {};
+  for (const name of SIDE_NAMES) {
+    const bone = SIDE_BONES[name];
+    let a = null, b = null;
+    if (!bone.rigid) {
+      a = name === "spine" ? sh : name === "head" ? ear : live(bone.live[0]);
+      b = name === "spine" ? hip : live(bone.live[1]);
+    }
+    if (a && b && norm(sub(b, a)) > 2) maps[name] = boneMap(restSide(bone.from, facing), restSide(bone.to, facing), a, b, size, bone.uniform);
+    else maps[name] = maps[SIDE_PARENT[name]];
+  }
+  return SIDE_NAMES.map((n) => maps[n]);
+}
+
 // tracked joints (court px, visibility) -> one affine map per bone, or null without shoulders
 function poseBones(P) {
-  const joint = (name) => {
-    const l = LANDMARK[name];
-    if (Array.isArray(l)) {
-      const [p, q] = l.map((j) => P[j]);
-      return p[2] >= VIS && q[2] >= VIS ? mul(add(p, q), 0.5) : null;
-    }
-    return P[l][2] >= VIS ? P[l].slice(0, 2) : null;
-  };
+  const joint = jointOf(P);
   const shL = joint("shL"), shR = joint("shR");
   if (!shL || !shR) return null;
   // body size: shoulder width, or the torso's length when the player turns side-on
@@ -131,7 +215,7 @@ function poseBones(P) {
   if (hipL && hipR) size = Math.max(size, (0.85 * norm(sub(mul(add(hipL, hipR), 0.5), mul(add(shL, shR), 0.5)))) / REST_TORSO);
   const maps = {};
   for (const name of BONE_NAMES) {
-    const bone = BONES[name], a = joint(bone.from), b = joint(bone.to);
+    const bone = BONES[name], a = !bone.rigid && joint(bone.from), b = !bone.rigid && joint(bone.to);
     // the shoulder-to-elbow and hip-to-knee bones start where the chest and pelvis put them
     if (a && b && norm(sub(b, a)) > 2) maps[name] = boneMap(REST[bone.from], REST[bone.to], a, b, size, bone.uniform);
     else maps[name] = maps[PARENT[name]];
@@ -237,6 +321,8 @@ class Body {
     this.seen = -1e9;
     this.at = null;
     this.skin = CAST[n % CAST.length]; // for "mix"
+    this.side = false; // drawn side-on
+    this.facing = 1; // +1 facing right on screen, -1 left
   }
 }
 
@@ -257,16 +343,19 @@ export class Costumes {
     for (const n of names) {
       if (this.costumes[n] || !this.gl.gl) continue;
       this.costumes[n] = readPsd(`costumes/${n}.psd`).then((psd) => {
-        const meshes = partLayers(psd.children).map(({ part, layer }) => {
-          const m = buildMesh(layer, part);
-          m.alpha = layer.opacity ?? 1;
-          this.gl.upload(m);
-          return m;
-        });
-        this.costumes[n] = meshes;
+        // layers with nothing painted are dropped, so an empty side group means front view only
+        const make = (nodes, parts, side) => partLayers(nodes, parts)
+          .map(({ part, layer }) => Object.assign(buildMesh(layer, part, side), { alpha: layer.opacity ?? 1 }))
+          .filter((m) => m.idx.length > 0)
+          .map((m) => {
+            this.gl.upload(m);
+            return m;
+          });
+        const side = make(sideGroup(psd.children)?.children, SIDE_PARTS, true);
+        this.costumes[n] = { front: make(psd.children, PARTS, false), side, sideLeft: side.map(mirrored) };
       }).catch((e) => {
         console.error(`costume ${n}:`, e);
-        this.costumes[n] = [];
+        this.costumes[n] = { front: [], side: [], sideLeft: [] };
       });
     }
   }
@@ -308,11 +397,19 @@ export class Costumes {
       this.gl.begin(W, H);
       let drew = false;
       for (const b of this.bodies) {
-        const meshes = this.costumes[this.skin === "mix" ? b.skin : this.skin];
-        if (!Array.isArray(meshes)) continue;
-        const maps = poseBones(b.P);
-        if (!maps) continue;
+        const costume = this.costumes[this.skin === "mix" ? b.skin : this.skin];
+        if (!costume || costume instanceof Promise) continue;
         const fade = Math.min(1, Math.max(0, 1 - (now - b.seen - GRACE_S * 0.5) / (GRACE_S * 0.5)));
+        // front or side view, swapped on the frame the turn crosses over (with some slack each way)
+        const turn = turnOf(b.P);
+        if (turn && costume.side.length) {
+          if (turn.facing) b.facing = turn.facing;
+          if (b.side ? turn.t > SIDE_OUT : turn.t < SIDE_IN) b.side = !b.side;
+        } else if (!costume.side.length) b.side = false;
+        const [meshes, maps] = b.side
+          ? [b.facing > 0 ? costume.side : costume.sideLeft, poseSide(b.P, b.facing)]
+          : [costume.front, poseBones(b.P)];
+        if (!maps) continue;
         for (const m of meshes) this.gl.draw(m, skin(m, maps), m.alpha * fade);
         drew = true;
       }

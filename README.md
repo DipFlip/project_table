@@ -92,21 +92,29 @@ the pose wrist up close (`?hands=0` turns it off; the `?debug=1` panel counts pa
 Volleyball does the same, matching up to four hands across all players.
 
 The body games can put costumes on the players: the c key cycles astronaut, werewolf, robot,
-farmer, the blank template and mix (a different one each); `?skin=astronaut` starts with one.
+farmer and mix (a different one each); `?skin=astronaut` starts with one. To draw a new one, see
+`web/costumes/README.md`.
 Each costume is a layered PSD in `web/costumes/` painted over one blank template
-(`web/costumes/template.psd`, 1024 x 1536, joints in `web/rest.js`). `web/rig.js` reads the PSD in
+(`web/costumes/template.psd`, 2048 x 1536, joints in `web/rest.js`): a front view on the left half
+and a side view, facing right, on the right half. `web/rig.js` reads the PSD in
 the page, turns every layer into a mesh weighted to the bones of its part (soft falloff, so joints
-bend smoothly) and bends it to each player's tracked pose with WebGL.
+bend smoothly) and bends it to each player's tracked pose with WebGL. When a player turns more
+than about 60° from the camera (shoulders narrow next to the torso) the costume swaps to its
+side view, mirrored for a player facing left, and back once they turn under about 45°.
 
-To make a costume in Photoshop: open `template.psd`, keep its layer names (`back`, `leg_l`,
-`leg_r`, `torso`, `arm_l`, `arm_r`, `head`; `_l` is the left of the picture), paint over the
-mannequin on each part's layer, and save as `web/costumes/<name>.psd`, then add the name to
+To make a costume in Photoshop: copy `template.psd` (the mannequin is in a `template` group the
+game ignores, under empty part layers to paint on), keep its layer names (`back`, `leg_l`,
+`leg_r`, `torso`, `arm_l`, `arm_r`, `head`; `_l` is the left of the picture, and in the `side`
+group `arm_far`, `leg_far`, `back`, `torso`, `leg_near`, `arm_near`, `head`, where near is the side
+towards the camera), paint over the mannequin on each part's layer, and save as `web/costumes/<name>.psd`, then add the name to
 `SKINS` in `web/rig.js`. A layer or group follows the part its name starts with ("arm_l glove"
-works), layers draw in the PSD's order, and hidden layers are skipped. The hidden `guide` layer
+works), layers draw in the PSD's order, and hidden layers are skipped (except the `side` group
+itself, which can be hidden while painting the front). The hidden `guide` layer
 shows the bones; turn it on while painting and keep each part's art around its own bones. Leave
 the face clear in the `head` layer to show the player's own face (the astronaut's visor). Don't
 outline a limb's end where it tucks under the torso at the shoulder or hip: that end swings
-into view when the arm goes up. Reload the page to see a re-saved PSD. The four costumes and the
+into view when the arm goes up. Feet are drawn turned out to the sides and follow the shins
+rather than the tracked toes. Reload the page to see a re-saved PSD. The four costumes and the
 template are drawn by `tools/costumes/make.mjs` (`cd tools/costumes && npm install && node make.mjs`).
 
     python3 -m http.server 8517 -d web             # local: http://localhost:8517

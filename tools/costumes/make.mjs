@@ -1,6 +1,8 @@
-// Paints the costume PSDs in web/costumes/: a blank mannequin template plus four costumes, each
-// with one layer per body part (back, leg_l, leg_r, torso, arm_l, arm_r, head) in the rest pose of
-// web/rest.js, and a hidden "guide" layer showing the bones. Open template.psd in Photoshop, paint
+// Paints the costume PSDs in web/costumes/ (see web/costumes/README.md for drawing your own): a
+// blank mannequin template (in a reference group, under empty part layers) plus four costumes, each
+// with one layer per body part (back, leg_l, leg_r, torso, arm_l, arm_r, head) in the front rest
+// pose of web/rest.js (left half), a "side" group with the side view (right half: arm_far,
+// leg_far, back, torso, leg_near, arm_near, head) and a hidden "guide" layer showing the bones. Open template.psd in Photoshop, paint
 // on the part layers, save as web/costumes/<name>.psd and add the name to COSTUMES in web/rig.js.
 //
 //   cd tools/costumes && npm install && node make.mjs
@@ -10,7 +12,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import agPsd from "ag-psd";
-import { SIZE, REST as J, BONES } from "../../web/rest.js";
+import { SIZE, REST as J, BONES, REST_SIDE as K, SIDE_BONES } from "../../web/rest.js";
 
 const [W, H] = SIZE;
 const OUT = path.join(import.meta.dirname, "../../web/costumes");
@@ -171,6 +173,12 @@ class Layer {
     return this.paint(clip(s, behind), { ...opts, ink: 0 });
   }
 
+  // a little darker, for the far limbs in the side view
+  darken(k) {
+    for (let i = 0; i < this.px.length; i += 4) for (let c = 0; c < 3; c++) this.px[i + c] *= k;
+    return this;
+  }
+
   // straight-alpha 8-bit pixels cropped to what's painted
   crop() {
     let x0 = W, y0 = H, x1 = -1, y1 = -1;
@@ -193,8 +201,17 @@ class Layer {
   }
 }
 
-function writeCostume(name, layers) {
-  const children = layers.map((l) => ({ name: l.name, hidden: l.hidden, ...l.crop() }));
+// A costume PSD: the front part layers, the "side" group and the hidden guide. With `reference`
+// (the template) the drawn mannequin goes in a "template" group the game ignores, under empty
+// part layers with the same names to paint on.
+function writeCostume(name, front, side, reference = false) {
+  const layers = [...front, ...side, guide()];
+  const entry = (l) => ({ name: l.name, hidden: l.hidden, ...l.crop() });
+  const parts = (front, side) => [...front.map(entry), { name: "side", opened: true, children: side.map(entry) }];
+  const empty = (ls) => ls.map((l) => new Layer(l.name));
+  const children = reference
+    ? [{ name: "template (reference only, not drawn in the game)", opened: true, children: parts(front, side) }, ...parts(empty(front), empty(side)), entry(layers.at(-1))]
+    : [...parts(front, side), entry(layers.at(-1))];
   // the flattened image Photoshop shows before it reads the layers
   const comp = new Uint8ClampedArray(W * H * 4);
   const acc = new Float32Array(W * H * 4);
@@ -213,14 +230,16 @@ function writeCostume(name, layers) {
   }
   const psd = { width: W, height: H, children, imageData: { width: W, height: H, data: comp } };
   fs.writeFileSync(path.join(OUT, `${name}.psd`), Buffer.from(agPsd.writePsd(psd, { generateThumbnail: false })));
-  console.log(`${name}.psd: ${children.map((c) => c.name).join(", ")}`);
+  console.log(`${name}.psd: ${front.map((l) => l.name).join(", ")} | side: ${side.map((l) => l.name).join(", ")}`);
 }
 
 // the hidden guide layer: bones in pink, joints in cyan, the head's tracked size as a ring
 function guide() {
   const g = new Layer("guide", true);
-  for (const b of Object.values(BONES)) g.paint(capsule(J[b.from], J[b.to], 3), { fill: hex("#ff3b8b"), ink: 0, shade: false, alpha: 0.9 });
-  for (const p of Object.values(J)) g.paint(circle(p, 8), { fill: hex("#38e0ff"), ink: 2, shade: false });
+  for (const [bones, joints] of [[BONES, J], [SIDE_BONES, K]]) {
+    for (const b of Object.values(bones)) g.paint(capsule(joints[b.from], joints[b.to], 3), { fill: hex("#ff3b8b"), ink: 0, shade: false, alpha: 0.9 });
+    for (const p of Object.values(joints)) g.paint(circle(p, 8), { fill: hex("#38e0ff"), ink: 2, shade: false });
+  }
   g.paint(ring(circle(J.head, 97), 3), { fill: hex("#38e0ff"), ink: 0, shade: false, alpha: 0.7 });
   return g;
 }
@@ -230,11 +249,31 @@ const SIDES = [
   { s: "L", sh: J.shL, el: J.elL, wr: J.wrL, hand: J.handL, hip: J.hipL, kn: J.knL, an: J.anL, toe: J.toeL, out: -1 },
   { s: "R", sh: J.shR, el: J.elR, wr: J.wrR, hand: J.handR, hip: J.hipR, kn: J.knR, an: J.anR, toe: J.toeR, out: 1 },
 ];
+// the side view's limbs, facing right: "near" towards the camera, "far" behind the body
+const SIDE_LIMBS = [
+  { s: "far", sh: add(K.sh, [-6, 0]), el: K.elF, wr: K.wrF, hand: K.handF, hip: add(K.hip, [-10, 0]), kn: K.knF, an: K.anF, toe: K.toeF, out: 1 },
+  { s: "near", sh: add(K.sh, [6, 0]), el: K.elN, wr: K.wrN, hand: K.handN, hip: add(K.hip, [10, 0]), kn: K.knN, an: K.anN, toe: K.toeN, out: 1 },
+];
+let LIMBS = SIDES; // which limbs the costume functions paint: SIDES (front) or SIDE_LIMBS
+// the side view's torso: chest to the right, back to the left
+const C = K.sh[0];
+const sideTorso = (wide = 0) => round(poly([
+  [C - 40, 352], [C + 30, 346], [C + 76 + wide, 432], [C + 86 + wide, 540], [C + 66 + wide, 680], [C + 74 + wide, 800], [C + 62 + wide, 852],
+  [C - 70 - wide, 852], [C - 80 - wide, 762], [C - 62 - wide, 640], [C - 74 - wide, 470], [C - 54 - wide, 384],
+]), 22);
+
+// shoulders slope down from the neck and stop inside the sleeves, so they don't stick out past
+// where the arms start
 const torsoShape = (wide = 0) => round(poly([
-  [J.shL[0] - 26 - wide, J.shL[1] - 18], [J.shR[0] + 26 + wide, J.shR[1] - 18],
-  [J.shR[0] + 4 + wide, 560], [J.hipR[0] + 26 + wide, 700], [J.hipR[0] + 30 + wide, 850],
-  [J.hipL[0] - 30 - wide, 850], [J.hipL[0] - 26 - wide, 700], [J.shL[0] - 4 - wide, 560],
+  [J.shL[0] + 70, J.shL[1] - 40], [J.shR[0] - 70, J.shR[1] - 40],
+  [J.shR[0] - 6 + wide / 2, J.shR[1] + 4], [J.shR[0] - 2 + wide / 2, 560], [J.hipR[0] + 26 + wide, 700], [J.hipR[0] + 30 + wide, 850],
+  [J.hipL[0] - 30 - wide, 850], [J.hipL[0] - 26 - wide, 700], [J.shL[0] + 2 - wide / 2, 560], [J.shL[0] + 6 - wide / 2, J.shL[1] + 4],
 ]), 26);
+// the bottom strip (h px) of a foot drawn from the ankle (radius ra) to the toe (radius rt)
+const sole = (sd, ra, rt, h) => {
+  const bottom = Math.max(sd.an[1] + ra, sd.toe[1] + rt);
+  return S((x, y) => bottom - h - y, [0, 0, W, H]);
+};
 const handShape = (sd, rx, ry) => {
   const d = unit(sub(sd.hand, sd.wr));
   return ellipse(lerp(sd.wr, sd.hand, 0.75), rx, ry, Math.atan2(d[1], d[0]) - Math.PI / 2);
@@ -248,14 +287,14 @@ const thumb = (sd, r) => {
 // --- the blank template -------------------------------------------------------------------
 function template() {
   const skin = hex("#d9d3ca"), L = (n) => new Layer(n);
-  const legs = SIDES.map((sd) => L(`leg_${sd.s.toLowerCase()}`)
+  const legs = LIMBS.map((sd) => L(`leg_${sd.s.toLowerCase()}`)
     .limb(blend(24, chain(22, [sd.hip, sd.kn, sd.an], [52, 40, 28]), capsule(sd.an, sd.toe, 26, 20)), sd.hip, sd.kn, { fill: skin, thick: 44 }));
   const torso = L("torso").paint(torsoShape(), { fill: skin, thick: 90 });
-  const arms = SIDES.map((sd) => L(`arm_${sd.s.toLowerCase()}`)
+  const arms = LIMBS.map((sd) => L(`arm_${sd.s.toLowerCase()}`)
     .limb(blend(16, chain(18, [add(sd.sh, [sd.out * -14, 6]), sd.el, sd.wr], [44, 32, 25]), handShape(sd, 26, 40), thumb(sd, 12)), sd.sh, sd.el, { fill: skin, thick: 36 }));
   const head = L("head")
     .paint(blend(8, capsule([512, 300], [512, 372], 32), blend(14, ellipse([512, 205], 88, 102), ellipse([512, 262], 62, 52)), ellipse(J.earL, 15, 25), ellipse(J.earR, 15, 25)), { fill: skin, thick: 70 });
-  writeCostume("template", [new Layer("back"), ...legs, torso, ...arms, head, guide()]);
+  return { back: new Layer("back"), legs, torso, arms, head };
 }
 
 // --- astronaut: a white suit and a helmet with the player's own face behind the visor --------
@@ -265,13 +304,13 @@ function astronaut() {
     .paint(box([512, 560], 196, 220, 48), { fill: grey, thick: 70 })
     .paint(capsule([322, 400], [322, 720], 34), { fill: hex("#d5d9de"), thick: 34, gloss: 0.3 })
     .paint(capsule([702, 400], [702, 720], 34), { fill: hex("#d5d9de"), thick: 34, gloss: 0.3 });
-  const legs = SIDES.map((sd) => {
+  const legs = LIMBS.map((sd) => {
     const l = new Layer(`leg_${sd.s.toLowerCase()}`);
     l.limb(chain(24, [add(sd.hip, [0, -20]), sd.kn, sd.an], [62, 54, 48]), sd.hip, sd.kn, { fill: white, thick: 56 });
     l.paint(ellipse(add(sd.kn, [0, 4]), 54, 40), { fill: grey, thick: 30 });
     l.paint(ring(capsule(add(sd.an, [-50, -48]), add(sd.an, [50, -48]), 1), 12), { fill: grey, ink: 3, thick: 8 });
     l.paint(blend(18, capsule(add(sd.an, [0, -30]), sd.an, 50, 50), capsule(sd.an, add(sd.toe, [0, -6]), 48, 40)), { fill: hex("#8e959f"), thick: 40, gloss: 0.2 });
-    l.paint(clip(blend(18, capsule(sd.an, add(sd.toe, [0, -6]), 48, 40)), box([sd.an[0], sd.toe[1] + 10, 0], 90, 22)), { fill: dark, thick: 14 });
+    l.paint(clip(capsule(sd.an, add(sd.toe, [0, -6]), 48, 40), sole(sd, 48, 34, 16)), { fill: dark, thick: 14 });
     return l;
   });
   const torso = new Layer("torso");
@@ -287,7 +326,7 @@ function astronaut() {
   torso.paint(circle([424, 462], 34), { fill: blue, thick: 30 });
   torso.paint(ring(circle([424, 462], 26), 6), { fill: orange, ink: 0, shade: false });
   torso.paint(poly([[424, 440], [432, 458], [450, 462], [432, 468], [424, 486], [416, 468], [398, 462], [416, 458]]), { fill: white, ink: 0, shade: false });
-  const arms = SIDES.map((sd) => {
+  const arms = LIMBS.map((sd) => {
     const l = new Layer(`arm_${sd.s.toLowerCase()}`);
     l.limb(chain(20, [add(sd.sh, [sd.out * -12, 4]), sd.el, sd.wr], [52, 44, 40]), sd.sh, sd.el, { fill: white, thick: 46 });
     l.paint(ellipse(sd.el, 44, 36, Math.atan2(sd.wr[1] - sd.el[1], sd.wr[0] - sd.el[0])), { fill: grey, thick: 26 });
@@ -308,7 +347,7 @@ function astronaut() {
   head.paint(circle([668, 160], 11), { fill: hex("#fff2a8"), ink: 3, shade: false, glow: 0.4, thick: 11 });
   head.paint(capsule([418, 82], [396, 18], 5), { fill: grey, ink: 3, thick: 5 });
   head.paint(circle([396, 16], 12), { fill: hex("#ff4d4d"), ink: 3, thick: 12, gloss: 0.5 });
-  writeCostume("astronaut", [back, ...legs, torso, ...arms, head, guide()]);
+  return { back, legs, torso, arms, head };
 }
 
 // --- werewolf: shaggy fur, torn purple trousers, a wolf's head ------------------------------
@@ -325,7 +364,7 @@ function werewolf() {
   };
   const back = new Layer("back")
     .paint(shaggy(chain(30, [[560, 760], [660, 880], [720, 1000], [700, 1080]], [34, 58, 50, 18]), 12, 10), { fill: fur, thick: 50 });
-  const legs = SIDES.map((sd) => {
+  const legs = LIMBS.map((sd) => {
     const l = new Layer(`leg_${sd.s.toLowerCase()}`);
     l.limb(shaggy(chain(24, [add(sd.hip, [0, -20]), sd.kn, sd.an], [60, 50, 42]), 9, 9), sd.hip, sd.kn, { fill: fur, thick: 52 });
     // torn trousers down to the knee
@@ -343,7 +382,7 @@ function werewolf() {
   torso.paint(shaggy(ellipse([512, 560], 112, 190), 10, 8), { fill: belly, ink: 0, thick: 80 });
   torso.paint(clip(torsoShape(14), S((x, y) => 778 - y + 6 * Math.sin(x / 9), [0, 0, W, H])), { fill: purple, thick: 60 });
   torso.paint(clip(torsoShape(14), box([512, 790], 220, 12)), { fill: hex("#4a2a75"), ink: 3, thick: 10 });
-  const arms = SIDES.map((sd) => {
+  const arms = LIMBS.map((sd) => {
     const l = new Layer(`arm_${sd.s.toLowerCase()}`);
     l.limb(shaggy(chain(20, [add(sd.sh, [sd.out * -14, 4]), sd.el, sd.wr], [54, 46, 40]), 9, 9), sd.sh, sd.el, { fill: fur, thick: 48 });
     const d = unit(sub(sd.hand, sd.wr));
@@ -369,7 +408,7 @@ function werewolf() {
   head.paint(ring(S((x, y) => Math.hypot((x - 512) / 1.6, y - 250) - 42, [440, 200, 584, 300]), 5), { fill: INK, ink: 0, shade: false });
   head.paint(cut(ellipse([512, 300], 50, 22), box([512, 282], 60, 18)), { fill: hex("#7a1f2b"), ink: 4, thick: 14 });
   for (const s of [-1, 1]) head.paint(poly([[512 + s * 34, 296], [512 + s * 22, 296], [512 + s * 28, 322]]), { fill: claw, ink: 3, thick: 8, gloss: 0.4 });
-  writeCostume("werewolf", [back, ...legs, torso, ...arms, head, guide()]);
+  return { back, legs, torso, arms, head };
 }
 
 // --- robot: rounded metal parts, glowing joints and a screen face ---------------------------
@@ -379,13 +418,13 @@ function robot() {
     l.paint(circle(at, r), { fill: dark, thick: r });
     l.paint(circle(at, r * 0.55), { fill: cyan, ink: 0, thick: r * 0.6, glow: 0.45, gloss: 0.4 });
   };
-  const legs = SIDES.map((sd) => {
+  const legs = LIMBS.map((sd) => {
     const l = new Layer(`leg_${sd.s.toLowerCase()}`);
     l.limb(capsule(add(sd.hip, [0, -10]), sd.kn, 48, 42), sd.hip, sd.kn, { fill: metal, thick: 44, gloss: 0.4 });
     l.paint(capsule(sd.kn, sd.an, 42, 34), { fill: steel, thick: 40, gloss: 0.4 });
     l.paint(ring(capsule(add(sd.kn, [0, 90]), add(sd.kn, [0, 200]), 22), 4), { fill: dark, ink: 0, shade: false, alpha: 0.6 });
     core(l, sd.kn, 40);
-    l.paint(box(add(sd.an, [sd.out * 8, 52]), 62, 30, 22), { fill: dark, thick: 28, gloss: 0.3 });
+    l.paint(box(add(lerp(sd.an, sd.toe, 0.5), [0, 22]), 70, 28, 22), { fill: dark, thick: 28, gloss: 0.3 });
     core(l, sd.an, 26);
     return l;
   });
@@ -397,7 +436,7 @@ function robot() {
   torso.paint(ring(circle([512, 470], 82), 6), { fill: steel, ink: 3, thick: 6 });
   for (const [x, y] of [[392, 400], [632, 400], [404, 570], [620, 570]]) torso.paint(circle([x, y], 9), { fill: steel, ink: 3, thick: 9, gloss: 0.6 });
   for (let i = 0; i < 3; i++) for (const s of [-1, 1]) torso.paint(capsule([512 + s * 100, 452 + i * 20], [512 + s * 128, 452 + i * 20], 4), { fill: dark, ink: 0, shade: false });
-  const arms = SIDES.map((sd) => {
+  const arms = LIMBS.map((sd) => {
     const l = new Layer(`arm_${sd.s.toLowerCase()}`);
     l.paint(capsule(sd.sh, sd.el, 36, 32), { fill: steel, thick: 34, gloss: 0.4 });
     l.paint(capsule(sd.el, sd.wr, 34, 42), { fill: metal, thick: 40, gloss: 0.45 });
@@ -422,7 +461,7 @@ function robot() {
   head.paint(box([512, 218], 94, 64, 28), { fill: hex("#14212d"), ink: 4, thick: 30, gloss: 0.35 });
   for (const s of [-1, 1]) head.paint(box([512 + s * 42, 206], 16, 20, 9), { fill: cyan, ink: 0, thick: 14, glow: 0.5 });
   for (let i = 0; i < 5; i++) head.paint(box([476 + i * 18, 254], 5, 8 - Math.abs(i - 2) * 2, 2.5), { fill: cyan, ink: 0, shade: false, alpha: 0.85 });
-  writeCostume("robot", [new Layer("back"), ...legs, torso, ...arms, head, guide()]);
+  return { back: new Layer("back"), legs, torso, arms, head };
 }
 
 // --- farmer: plaid shirt, dungarees, boots and a straw hat, with the player's own face --------
@@ -444,13 +483,13 @@ function farmer() {
     const n = Math.floor(len(sub(b, a)) / 16);
     for (let i = 0; i < n; i++) l.paint(capsule(lerp(a, b, (i + 0.15) / n), lerp(a, b, (i + 0.6) / n), 2), { fill: hex("#f0c069"), ink: 0, shade: false });
   };
-  const legs = SIDES.map((sd) => {
+  const legs = LIMBS.map((sd) => {
     const l = new Layer(`leg_${sd.s.toLowerCase()}`);
     l.limb(chain(22, [add(sd.hip, [0, -30]), sd.kn, add(sd.an, [0, -10])], [60, 52, 48]), sd.hip, sd.kn, { fill: denim, thick: 54 });
     stitch(l, add(sd.hip, [sd.out * 50, 0]), add(sd.an, [sd.out * 42, -80]));
     l.paint(box(add(sd.an, [0, -64]), 52, 18, 10), { fill: hex("#5b87cc"), ink: 4, thick: 16 });
     l.paint(blend(18, capsule(add(sd.an, [0, -46]), sd.an, 46, 46), capsule(sd.an, add(sd.toe, [0, -8]), 44, 36)), { fill: boot, thick: 40, gloss: 0.3 });
-    l.paint(clip(capsule(sd.an, add(sd.toe, [0, -8]), 44, 36), box([sd.an[0], sd.toe[1] + 12, 0], 100, 18)), { fill: hex("#2e1d14"), ink: 3, thick: 10 });
+    l.paint(clip(capsule(sd.an, add(sd.toe, [0, -8]), 44, 36), sole(sd, 44, 28, 14)), { fill: hex("#2e1d14"), ink: 3, thick: 10 });
     return l;
   });
   const torso = new Layer("torso");
@@ -468,7 +507,7 @@ function farmer() {
   stitch(torso, [460, 610], [564, 610]);
   stitch(torso, [420, 570], [420, 840]);
   stitch(torso, [604, 570], [604, 840]);
-  const arms = SIDES.map((sd) => {
+  const arms = LIMBS.map((sd) => {
     const l = new Layer(`arm_${sd.s.toLowerCase()}`);
     l.limb(chain(18, [add(sd.sh, [sd.out * -14, 4]), sd.el, sd.wr], [50, 44, 40]), sd.sh, sd.el, { fill: plaid, thick: 46 });
     const d = unit(sub(sd.wr, sd.el)), n = perp(d);
@@ -486,9 +525,121 @@ function farmer() {
     const at = [640 + i * 10, 300 + i * 2.5];
     for (const s of [-1, 1]) head.paint(ellipse(add(at, [4, s * 7]), 8, 4, 0.25 + s * 0.5), { fill: hex("#e8c35a"), ink: 2, thick: 4 });
   }
-  writeCostume("farmer", [new Layer("back"), ...legs, torso, ...arms, head, guide()]);
+  return { back: new Layer("back"), legs, torso, arms, head };
 }
+
+// --- side views: the costume's own limbs at the side pose, plus a profile torso, head and back -----
+const SIDE_ART = {
+  template() {
+    const skin = hex("#d9d3ca");
+    const torso = new Layer("torso").paint(sideTorso(), { fill: skin, thick: 80 });
+    const head = new Layer("head").paint(blend(8, capsule([C - 14, 300], [C - 14, 372], 32),
+      blend(16, ellipse([C - 4, 205], 94, 102), ellipse([C + 40, 266], 48, 46), circle(K.nose, 13)), ellipse(K.ear, 14, 24)), { fill: skin, thick: 70 });
+    return { back: new Layer("back"), torso, head };
+  },
+  astronaut() {
+    const white = hex("#f3f2ee"), grey = hex("#a7aeb8"), dark = hex("#3a404a"), gold = hex("#e2b33c");
+    const back = new Layer("back")
+      .paint(box([C - 118, 560], 66, 214, 34), { fill: grey, thick: 50 })
+      .paint(capsule([C - 172, 420], [C - 172, 700], 26), { fill: hex("#d5d9de"), thick: 26, gloss: 0.3 });
+    const torso = new Layer("torso");
+    const body = sideTorso(14);
+    torso.paint(body, { fill: white, thick: 90 });
+    torso.paint(clip(body, box([C, 800], 200, 22)), { fill: grey, ink: 4, thick: 18 });
+    torso.paint(box([C + 92, 536], 16, 52, 8), { fill: dark, thick: 12, gloss: 0.35 });
+    const head = new Layer("head");
+    head.paint(ellipse([C, 352], 96, 40), { fill: grey, thick: 30 });
+    const visor = ellipse([C + 70, 232], 76, 104);
+    head.paint(cut(circle([C, 222], 160), visor), { fill: white, thick: 60, gloss: 0.25 });
+    head.paint(clip(ring(visor, 12), circle([C, 222], 162)), { fill: gold, ink: 3, thick: 6, gloss: 0.5 });
+    head.paint(clip(visor, circle([C, 222], 160)), { fill: hex("#8cc2ff"), ink: 0, shade: false, alpha: 0.13 });
+    head.paint(clip(ring(ellipse([C + 70, 232], 58, 86), 12), poly([[C, 120], [C + 120, 120], [C + 100, 170], [C + 40, 230], [C, 260]])), { fill: [1, 1, 1], ink: 0, shade: false, alpha: 0.7 });
+    head.paint(box([C - 60, 160], 26, 30, 8), { fill: grey, thick: 16 });
+    head.paint(capsule([C - 40, 72], [C - 70, 16], 5), { fill: grey, ink: 3, thick: 5 });
+    head.paint(circle([C - 72, 14], 12), { fill: hex("#ff4d4d"), ink: 3, thick: 12, gloss: 0.5 });
+    return { back, torso, head };
+  },
+  werewolf() {
+    const furA = hex("#5d3d27"), furB = hex("#3b2617"), tan = hex("#b8905f"), purple = hex("#6c40a3"), claw = hex("#f4eedf");
+    const fur = (x, y) => mixc(furA, furB, smooth(0.35, 0.75, fbm(x / 22, y / 7)));
+    const belly = (x, y) => mixc(tan, hex("#94704a"), smooth(0.3, 0.8, fbm(x / 18, y / 6)));
+    const back = new Layer("back")
+      .paint(shaggy(chain(30, [[C - 50, 790], [C - 150, 880], [C - 210, 990], [C - 196, 1070]], [34, 58, 50, 18]), 12, 10), { fill: fur, thick: 50 });
+    const torso = new Layer("torso");
+    torso.paint(shaggy(sideTorso(10), 10, 10), { fill: fur, thick: 90 });
+    torso.paint(shaggy(ellipse([C + 58, 590], 40, 170), 8, 8), { fill: belly, ink: 0, thick: 40 });
+    torso.paint(clip(sideTorso(14), S((x, y) => 778 - y + 6 * Math.sin(x / 9), [0, 0, W, H])), { fill: purple, thick: 60 });
+    torso.paint(clip(sideTorso(14), box([C, 790], 220, 12)), { fill: hex("#4a2a75"), ink: 3, thick: 10 });
+    const head = new Layer("head");
+    head.paint(shaggy(ellipse([C - 20, 300], 128, 86), 16, 9), { fill: (x, y) => mixc(furB, furA, fbm(x / 20, y / 6) * 0.6), thick: 60 });
+    head.paint(round(poly([[C - 50, 120], [C - 82, 0], [C + 20, 100]]), 8), { fill: furB, thick: 30 });
+    head.paint(round(poly([[C - 36, 112], [C - 62, 36], [C + 2, 104]]), 4), { fill: hex("#c98b7a"), ink: 0, thick: 20 });
+    head.paint(blend(26, shaggy(ellipse([C - 10, 205], 104, 110), 7, 8), capsule([C + 40, 248], [C + 128, 262], 46, 30)), { fill: fur, thick: 80 });
+    head.paint(capsule([C + 50, 282], [C + 122, 284], 26, 18), { fill: tan, thick: 24 });
+    head.paint(ellipse([C + 140, 252], 18, 14), { fill: hex("#1c1418"), ink: 3, thick: 12, gloss: 0.6 });
+    head.paint(ellipse([C + 58, 194], 24, 14, 0.25), { fill: hex("#ffd23c"), ink: 4, thick: 12, glow: 0.35 });
+    head.paint(ellipse([C + 64, 194], 5, 12), { fill: INK, ink: 0, shade: false });
+    head.paint(capsule([C + 22, 170], [C + 90, 166], 9, 5), { fill: furB, ink: 3, thick: 8 });
+    head.paint(capsule([C + 40, 288], [C + 132, 282], 2.5), { fill: INK, ink: 0, shade: false });
+    head.paint(poly([[C + 100, 284], [C + 88, 284], [C + 94, 310]]), { fill: claw, ink: 3, thick: 8, gloss: 0.4 });
+    return { back, torso, head };
+  },
+  robot() {
+    const metal = hex("#bcc6d0"), steel = hex("#8a96a4"), dark = hex("#4a535e"), cyan = hex("#4de1ff"), red = hex("#ff4d4d");
+    const back = new Layer("back").paint(box([C - 112, 490], 34, 80, 16), { fill: steel, thick: 26, gloss: 0.4 });
+    const torso = new Layer("torso");
+    torso.paint(box([C + 4, 480], 92, 112, 34), { fill: metal, thick: 80, gloss: 0.45 });
+    [640, 700, 760].forEach((y) => torso.paint(box([C, y], 72, 28, 18), { fill: steel, thick: 24, gloss: 0.35 }));
+    torso.paint(box([C, 830], 92, 40, 26), { fill: dark, thick: 30, gloss: 0.3 });
+    torso.paint(ellipse([C + 94, 470], 12, 40), { fill: cyan, ink: 3, thick: 12, glow: 0.45 });
+    const head = new Layer("head");
+    head.paint(capsule([C, 290], [C, 372], 34), { fill: dark, thick: 30 });
+    head.paint(capsule([C - 10, 96], [C - 10, 46], 5), { fill: steel, ink: 3, thick: 5 });
+    head.paint(circle([C - 10, 40], 17), { fill: red, ink: 3.5, thick: 17, gloss: 0.6, glow: 0.2 });
+    head.paint(box([C + 6, 210], 110, 114, 46), { fill: metal, thick: 90, gloss: 0.5 });
+    head.paint(box([C + 92, 218], 30, 64, 16), { fill: hex("#14212d"), ink: 4, thick: 20, gloss: 0.35 });
+    head.paint(box([C + 98, 206], 9, 20, 6), { fill: cyan, ink: 0, thick: 10, glow: 0.5 });
+    head.paint(circle([C - 14, 214], 34), { fill: dark, thick: 34 });
+    head.paint(circle([C - 14, 214], 19), { fill: cyan, ink: 0, thick: 20, glow: 0.45, gloss: 0.4 });
+    return { back, torso, head };
+  },
+  farmer() {
+    const denim = (x, y) => mixc(hex("#4373bb"), hex("#365f9f"), fbm(x / 3, y / 40) * 0.8);
+    const plaid = (x, y) => {
+      let c = hex("#c8423b");
+      const mx = ((x % 52) + 52) % 52, my = ((y % 52) + 52) % 52;
+      if (mx < 16) c = c.map((v) => v * 0.72);
+      if (my < 16) c = c.map((v) => v * 0.72);
+      if ((mx > 33 && mx < 36) || (my > 33 && my < 36)) c = mixc(c, hex("#f0d58a"), 0.6);
+      return c;
+    };
+    const straw = (x, y) => mixc(hex("#ecc865"), hex("#c99a3a"), smooth(0.4, 0.9, Math.abs(Math.sin(x / 5 + Math.sin(y / 9))) * 0.6 + fbm(x / 6, y / 6) * 0.4));
+    const torso = new Layer("torso");
+    torso.paint(sideTorso(10), { fill: plaid, thick: 90 });
+    torso.paint(clip(sideTorso(14), poly([[C - 10, 560], [C + 200, 560], [C + 200, 900], [C - 10, 900]])), { fill: denim, thick: 50 });
+    torso.paint(clip(sideTorso(14), box([C, 840], 200, 64)), { fill: denim, thick: 50 });
+    torso.paint(capsule([C + 30, 572], [C + 4, 372], 15), { fill: denim, thick: 14 });
+    torso.paint(circle([C + 30, 572], 11), { fill: hex("#e1b64a"), ink: 3, thick: 11, gloss: 0.6 });
+    const head = new Layer("head");
+    head.paint(ellipse([C + 20, 130], 206, 44), { fill: straw, thick: 40 });
+    head.paint(box([C, 78], 98, 60, 44), { fill: straw, thick: 60 });
+    head.paint(clip(box([C, 78], 98, 60, 44), box([C, 116], 110, 13)), { fill: hex("#c8423b"), ink: 3, thick: 10 });
+    head.paint(capsule([C + 66, 278], [C + 170, 302], 3.5), { fill: hex("#e8c35a"), ink: 2.5, shade: false });
+    for (let i = 0; i < 5; i++) for (const s of [-1, 1]) head.paint(ellipse([C + 174 + i * 10, 304 + i * 2.5 + s * 7], 8, 4, 0.25 + s * 0.5), { fill: hex("#e8c35a"), ink: 2, thick: 4 });
+    return { back: new Layer("back"), torso, head };
+  },
+};
 
 fs.mkdirSync(OUT, { recursive: true });
 const only = process.argv[2];
-for (const [name, make] of Object.entries({ template, astronaut, werewolf, robot, farmer })) if (!only || only === name) make();
+for (const [name, make] of Object.entries({ template, astronaut, werewolf, robot, farmer })) {
+  if (only && only !== name) continue;
+  LIMBS = SIDES;
+  const f = make();
+  LIMBS = SIDE_LIMBS;
+  const limbs = make(), s = SIDE_ART[name]();
+  const [legFar, legNear] = limbs.legs, [armFar, armNear] = limbs.arms;
+  legFar.darken(0.8);
+  armFar.darken(0.8);
+  writeCostume(name, [f.back, ...f.legs, f.torso, ...f.arms, f.head], [armFar, legFar, s.back, s.torso, legNear, armNear, s.head], name === "template");
+}

@@ -1,8 +1,9 @@
-// The costume template's rest pose: where each joint sits on the 1024 x 1536 template canvas
-// (costumes/template.psd). Every costume is painted over this pose; in the game each layer is
-// bent from here to the player's tracked pose. Front view, as seen on screen: the player's left
-// is on the left. Plain data, so the costume generator (tools/costumes) can import it too.
-export const SIZE = [1024, 1536];
+// The costume template's rest poses: where each joint sits on the 2048 x 1536 template canvas
+// (costumes/template.psd). The front view fills the left half, as seen on screen (the player's
+// left is on the left); the side view, facing right, fills the right half and lives in the PSD's
+// "side" group. Every costume is painted over these poses; in the game each layer is bent from
+// here to the player's tracked pose. Plain data, so the costume generator can import it too.
+export const SIZE = [2048, 1536];
 
 export const REST = {
   head: [512, 215], earL: [434, 222], earR: [590, 222],
@@ -14,20 +15,22 @@ export const REST = {
   hipL: [446, 820], hipR: [578, 820],
   knL: [436, 1120], knR: [588, 1120],
   anL: [430, 1405], anR: [594, 1405],
-  toeL: [404, 1478], toeR: [620, 1478],
+  toeL: [346, 1445], toeR: [678, 1445], // feet turned out to the sides
 };
 
 // Bones: a rest segment between two joints. A layer's vertices follow the bones of its part,
 // weighted by distance; `reach` widens or narrows a bone's pull. `uniform` bones scale the same
 // across as along (the head keeps its shape); the rest scale across by the body's overall size.
+// `rigid` bones ignore their own landmarks and move with their parent: the feet are drawn turned
+// out to the sides, while a player facing the camera has toes that point at it.
 export const BONES = {
   chest: { from: "shL", to: "shR" },
   pelvis: { from: "hipL", to: "hipR" },
   head: { from: "earL", to: "earR", uniform: true },
   upperL: { from: "shL", to: "elL" }, foreL: { from: "elL", to: "wrL" }, handL: { from: "wrL", to: "handL" },
   upperR: { from: "shR", to: "elR" }, foreR: { from: "elR", to: "wrR" }, handR: { from: "wrR", to: "handR" },
-  thighL: { from: "hipL", to: "knL" }, shinL: { from: "knL", to: "anL" }, footL: { from: "anL", to: "toeL" },
-  thighR: { from: "hipR", to: "knR" }, shinR: { from: "knR", to: "anR" }, footR: { from: "anR", to: "toeR" },
+  thighL: { from: "hipL", to: "knL" }, shinL: { from: "knL", to: "anL" }, footL: { from: "anL", to: "toeL", rigid: true },
+  thighR: { from: "hipR", to: "knR" }, shinR: { from: "knR", to: "anR" }, footR: { from: "anR", to: "toeR", rigid: true },
 };
 
 // Layer name -> the bones its pixels follow, with each bone's reach (bigger pulls from further).
@@ -42,4 +45,38 @@ export const PARTS = {
   arm_r: { upperR: 1, foreR: 1, handR: 0.8 },
   leg_l: { thighL: 1, shinL: 1, footL: 0.8 },
   leg_r: { thighR: 1, shinR: 1, footR: 0.8 },
+};
+
+// --- side view: facing right, centred on x = 1536 -----------------------------------------------
+// "N" is the near side (towards the camera, drawn in front of the body), "F" the far side. A
+// player facing left gets the same art mirrored.
+export const SIDE_CENTER = 1536;
+export const REST_SIDE = {
+  ear: [1518, 222], nose: [1604, 242],
+  sh: [1530, 392], hip: [1528, 820],
+  elN: [1548, 610], wrN: [1566, 818], handN: [1576, 902],
+  elF: [1512, 606], wrF: [1498, 814], handF: [1490, 898],
+  knN: [1552, 1120], anN: [1534, 1405], toeN: [1622, 1440],
+  knF: [1508, 1118], anF: [1494, 1402], toeF: [1582, 1437],
+};
+
+// side bones: rest joints and the tracked points they follow (N/F turn into the player's left or
+// right landmarks by which way they face; shMid and hipMid are midpoints of both sides)
+export const SIDE_BONES = {
+  spine: { from: "sh", to: "hip", live: ["shMid", "hipMid"] },
+  head: { from: "ear", to: "nose", live: ["earN", "nose"], uniform: true },
+  upperN: { from: "sh", to: "elN", live: ["shN", "elN"] }, foreN: { from: "elN", to: "wrN", live: ["elN", "wrN"] }, handN: { from: "wrN", to: "handN", live: ["wrN", "handN"] },
+  upperF: { from: "sh", to: "elF", live: ["shF", "elF"] }, foreF: { from: "elF", to: "wrF", live: ["elF", "wrF"] }, handF: { from: "wrF", to: "handF", live: ["wrF", "handF"] },
+  thighN: { from: "hip", to: "knN", live: ["hipN", "knN"] }, shinN: { from: "knN", to: "anN", live: ["knN", "anN"] }, footN: { from: "anN", to: "toeN", rigid: true },
+  thighF: { from: "hip", to: "knF", live: ["hipF", "knF"] }, shinF: { from: "knF", to: "anF", live: ["knF", "anF"] }, footF: { from: "anF", to: "toeF", rigid: true },
+};
+
+export const SIDE_PARTS = {
+  back: { spine: 1 },
+  torso: { spine: 1 },
+  head: { head: 1, spine: 0.35 },
+  arm_near: { upperN: 1, foreN: 1, handN: 0.8 },
+  arm_far: { upperF: 1, foreF: 1, handF: 0.8 },
+  leg_near: { thighN: 1, shinN: 1, footN: 0.8 },
+  leg_far: { thighF: 1, shinF: 1, footF: 0.8 },
 };
