@@ -89,6 +89,25 @@ lost, while Colour Juggle keeps one ball that changes colour to show which limb 
 it next (any wrong-limb touch is game over). Both also run MediaPipe's hand landmarker on each
 frame: a hand found near a body's wrist puts that platform on its palm, which is steadier than
 the pose wrist up close (`?hands=0` turns it off; the `?debug=1` panel counts palms per frame).
+Volleyball does the same, matching up to four hands across all players.
+
+The body games can put costumes on the players: the c key cycles astronaut, werewolf, robot,
+farmer, the blank template and mix (a different one each); `?skin=astronaut` starts with one.
+Each costume is a layered PSD in `web/costumes/` painted over one blank template
+(`web/costumes/template.psd`, 1024 x 1536, joints in `web/rest.js`). `web/rig.js` reads the PSD in
+the page, turns every layer into a mesh weighted to the bones of its part (soft falloff, so joints
+bend smoothly) and bends it to each player's tracked pose with WebGL.
+
+To make a costume in Photoshop: open `template.psd`, keep its layer names (`back`, `leg_l`,
+`leg_r`, `torso`, `arm_l`, `arm_r`, `head`; `_l` is the left of the picture), paint over the
+mannequin on each part's layer, and save as `web/costumes/<name>.psd`, then add the name to
+`SKINS` in `web/rig.js`. A layer or group follows the part its name starts with ("arm_l glove"
+works), layers draw in the PSD's order, and hidden layers are skipped. The hidden `guide` layer
+shows the bones; turn it on while painting and keep each part's art around its own bones. Leave
+the face clear in the `head` layer to show the player's own face (the astronaut's visor). Don't
+outline a limb's end where it tucks under the torso at the shoulder or hip: that end swings
+into view when the arm goes up. Reload the page to see a re-saved PSD. The four costumes and the
+template are drawn by `tools/costumes/make.mjs` (`cd tools/costumes && npm install && node make.mjs`).
 
     python3 -m http.server 8517 -d web             # local: http://localhost:8517
     cd web && npx vercel deploy --prod             # redeploy from CLI

@@ -5,6 +5,7 @@
 // head, with none it sits just above your head. The ball can fly above the screen (an arrow on
 // the top edge shows where it is) and has no bounce limit; when it lands, the other side scores.
 import { add, sub, mul, dot, norm, perp, clamp, rgb, OneEuro, drawText } from "./common.js";
+import { palmPoints, matchPalms, PalmFix } from "./palms.js";
 
 const WIN_SCORE = 11;
 const GRAVITY = 1.0; // x screen height per s²
@@ -48,6 +49,7 @@ class Athlete {
     this.wrists = [null, null]; // last position each wrist was seen at, in screen px
     this.wristAt = [-1e9, -1e9]; // and when
     this.wristIn = [false, false];
+    this.palms = [new PalmFix(), new PalmFix()]; // hand-landmarker palms fused into the wrists, see palms.js
     this.ends = null; // paddle ends in screen px, smoothed
     this.vel = [0, 0]; // paddle velocity, px/s
     this.t = null; // capture time of the last frame used
@@ -96,9 +98,9 @@ export class Volleyball {
     return ok(L_SHOULDER) && ok(R_SHOULDER) ? mul(add(pts[L_SHOULDER], pts[R_SHOULDER]), 0.5) : null;
   }
 
-  // a player's paddle from their head and their wrists: seen, followed along the forearm from
-  // the elbow, or held from a moment ago
-  reach(ath, pts, head, t) {
+  // a player's paddle from their head and their wrists: seen (or a hand-landmarker palm matched to
+  // the wrist), followed along the forearm from the elbow, or held from a moment ago
+  reach(ath, pts, head, t, palms) {
     const H = this.H, ok = (j) => pts[j][2] >= SEEN;
     ARMS.forEach(([s, e, w], i) => {
       ath.wristIn[i] = pts[w][2] >= (ath.wristIn[i] ? WRIST_OUT : WRIST_IN);
@@ -109,7 +111,9 @@ export class Volleyball {
         const upper = sub(pts[e], pts[s]);
         at = norm(sub(pts[w], pts[e])) <= 1.4 * norm(upper) ? pts[w] : add(pts[e], mul(upper, FOREARM));
       }
-      if (at) [ath.wrists[i], ath.wristAt[i]] = [at.slice(0, 2), t];
+      if (palms[i]) ath.wristIn[i] = true;
+      at = ath.palms[i].apply(at && at.slice(0, 2), palms[i], t);
+      if (at) [ath.wrists[i], ath.wristAt[i]] = [at, t];
     });
     const wrists = ath.wrists.filter((p, i) => p && t - ath.wristAt[i] <= WRIST_HOLD_S);
     let a, b, how;
@@ -145,10 +149,17 @@ export class Volleyball {
       matched.set(i, this.athletes[j]);
       taken.add(j);
     }
-    bodies.forEach((b, i) => {
+    const aths = bodies.map((b, i) => {
       let ath = matched.get(i);
       if (!ath) this.athletes.push((ath = new Athlete()));
-      const pad = this.reach(ath, b.pts, b.at, frame.t);
+      return ath;
+    });
+    // hand-landmarker palms matched across every player's wrists at once, so each goes to its own arm
+    const arms = bodies.flatMap((b, i) => ARMS.map(([, e, w], k) => ({ wrist: b.pts[w], elbow: b.pts[e], fix: aths[i].palms[k] })));
+    const palms = matchPalms(arms, palmPoints(frame.hands, (q) => this.app.toCourt(q)), this.H);
+    bodies.forEach((b, i) => {
+      const ath = aths[i];
+      const pad = this.reach(ath, b.pts, b.at, frame.t, palms.slice(2 * i, 2 * i + 2));
       let [p, q] = pad.ends;
       const e = ath.ends; // keep each end with the end it was last frame, so crossed arms don't swap them
       if (e && norm(sub(p, e[0])) + norm(sub(q, e[1])) > norm(sub(p, e[1])) + norm(sub(q, e[0]))) [p, q] = [q, p];

@@ -10,6 +10,7 @@
 // leaves the browser. It runs in a worker (tracker.js) so a slow detection never stalls the
 // ball; the camera image is shown as the <video> element itself, zoomed in a little so the
 // camera sees past the screen's edges and a hand at the edge is still tracked.
+import { Costumes } from "./rig.js";
 import { FLAGS, add, sub, mul, dot, norm, perp, clamp, rgb, rand, OneEuro, Sound, Particles, drawText } from "./common.js";
 import { Volleyball } from "./volley.js";
 import { Juggle, ColorJuggle } from "./juggle.js";
@@ -42,7 +43,7 @@ const JUMP = 0.3; // a hand appearing this far (x screen width) from the last on
 const VIRTUAL_TABLE_MM = 1100; // the screen's width stands for this much table
 const DIM_LEVELS = [0.35, 0.6, 1.0]; // video brightness under the game
 const ZOOMS = [1.25, 1.5, 1.0]; // how much the camera image is enlarged past filling the screen
-// The Juggle games also run the hand landmarker and use a hand's palm for its platform when the
+// The body games also run the hand landmarker and use a hand's palm for its platform when the
 // body's wrist is near it: steadier than the pose model's wrist up close. ?hands=0 turns it off.
 const HAND_HELP = FLAGS.hands === "0" ? null : {
   model: HAND_MODEL, options: {
@@ -415,7 +416,8 @@ const GAMES = {
   volley: {
     Scene: Volleyball, what: "body", zoom: 2, // whole bodies need the whole camera view
     grab: 1280, // players stand back from a laptop: keep the pixels their wrists have
-    task: "pose", model: POSE_MODEL, options: {
+    // hands only help players close to the camera; each one tracked costs a landmark pass
+    task: "pose", model: POSE_MODEL, hands: HAND_HELP && { ...HAND_HELP, options: { ...HAND_HELP.options, numHands: 4 } }, options: {
       runningMode: "VIDEO", numPoses: 6,
       // low presence/tracking thresholds keep a body through motion blur and partial views
       minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.3, minTrackingConfidence: 0.3,
@@ -612,6 +614,7 @@ class CamApp {
     this.debug = false;
     this.dim = 1;
     this.zoom = game.zoom;
+    this.puppets = game.task === "pose" ? new Costumes(FLAGS.skin) : null; // costumes on the players (rig.js), c cycles them
     this.videoBox = "";
     this.now = performance.now() / 1000;
     this.stats = new Stats(this.now);
@@ -706,6 +709,10 @@ class CamApp {
     this.fx.update(dt);
     c.save();
     if (this.turned) c.transform(0, 1, -1, 0, this.W, 0); // court x down the screen, court y right to left
+    if (this.puppets) {
+      this.puppets.update(this.frame, (q) => this.toCourt(q), this.W);
+      this.puppets.draw(c, now, this.W, this.H);
+    }
     this.scene.draw(c, now);
     this.fx.draw(c);
     c.restore();
@@ -745,6 +752,8 @@ class CamApp {
       this.zoom = (this.zoom + 1) % ZOOMS.length;
     } else if (k === "d") {
       this.debug = !this.debug;
+    } else if (k === "c") {
+      this.puppets?.next(this.now);
     } else if (k === "f") {
       if (document.fullscreenElement) document.exitFullscreen();
       else document.documentElement.requestFullscreen?.();

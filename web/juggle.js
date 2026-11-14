@@ -4,6 +4,7 @@
 // each foot towards the opposite / furthest hand), while moving sideways shifts that angle left or
 // right and snaps back as soon as you stop.
 import { add, sub, mul, dot, norm, perp, clamp, rgb, alpha, OneEuro, drawText } from "./common.js";
+import { palmPoints, matchPalms, PalmFix } from "./palms.js";
 
 const GRAVITY = 1.25; // x screen height per s²
 const BALL_R = 0.038; // x screen height
@@ -33,11 +34,6 @@ const HAND_IN = 0.55, HAND_OUT = 0.28; // hysteresis on wrist visibility
 const FOOT_IN = 0.65, FOOT_OUT = 0.4; // stricter for ankles so cut-off legs at the bottom edge don't ghost in
 const HOLD_S = 0.25; // hold a dropped hand where it was last seen this long
 const EXTEND = 0.85; // wrist lost, elbow + shoulder seen: extend straight past the elbow
-const PALM_REACH = 0.9; // a hand-landmarker palm takes over a wrist within this many forearm lengths of it
-const PALM_REACH_MIN = 0.07, PALM_REACH_MAX = 0.22; // ... clamped to this range (x screen height)
-const PALM_KEEP = 1.6; // an arm that had a palm last frame keeps matching one this much further out
-const PALM_OFF_RATE = 0.25; // per frame: how fast the learned palm-minus-pose offset follows
-const PALM_FADE_S = 0.8; // after the palm drops out, its offset fades from the pose estimate over this long
 const GRACE_S = 0.5; // keep the player through short tracking dropouts
 const PREDICT_S = 0.035; // extrapolate a platform towards "now" by at most this much
 const JUMP = 0.3; // a limb jumping further than this (x screen width) restarts its smoothing
@@ -50,8 +46,6 @@ const L_SHOULDER = 11, R_SHOULDER = 12, L_ELBOW = 13, R_ELBOW = 14, L_WRIST = 15
 const L_PINKY = 17, R_PINKY = 18, L_INDEX = 19, R_INDEX = 20;
 const L_HIP = 23, R_HIP = 24, L_KNEE = 25, R_KNEE = 26, L_ANKLE = 27, R_ANKLE = 28;
 const L_HEEL = 29, R_HEEL = 30, L_TOE = 31, R_TOE = 32;
-// MediaPipe hand landmarks: the wrist and the four knuckles at the base of the fingers
-const H_WRIST = 0, H_KNUCKLES = [5, 9, 13, 17];
 
 // [root, mid, end, tipA, tipB, isFoot]
 const LIMBS = [
@@ -118,8 +112,7 @@ class LimbPad {
     this.t = null;
     this.seen = -1e9;
     this.flashAt = -1e9;
-    this.palmOff = null; // palm minus pose estimate, learned while both are seen
-    this.palmSeen = -1e9;
+    this.palm = new PalmFix(); // keeps hand-landmarker palms and the pose estimate in one place
   }
 }
 
@@ -197,62 +190,6 @@ export class Juggle {
     return foot ? { offScreen: true } : null;
   }
 
-  // Hands from the hand landmarker (when the game runs it) are steadier than the pose model's wrists
-  // up close. Each is matched to the nearer wrist of the body; a match gives that arm a palm
-  // (halfway from wrist to knuckles, like the pose estimate) in this.palms[i], else null.
-  matchPalms(pts, hands) {
-    const had = this.palms || [null, null];
-    this.palms = [null, null];
-    if (!hands || !hands.length) return;
-    const H = this.H;
-    const palms = hands.map((lm) => {
-      const wrist = this.app.toCourt(lm[H_WRIST]);
-      const knuckles = mul(H_KNUCKLES.reduce((s, j) => add(s, this.app.toCourt(lm[j])), [0, 0]), 1 / H_KNUCKLES.length);
-      return { wrist, at: mul(add(wrist, knuckles), 0.5) };
-    });
-    const pairs = [];
-    for (const i of [0, 1]) {
-      const [, mid, end] = LIMBS[i];
-      const reach = clamp(PALM_REACH * norm(sub(pts[end], pts[mid])), PALM_REACH_MIN * H, PALM_REACH_MAX * H) * (had[i] ? PALM_KEEP : 1);
-      // measured from where the platform's pose estimate is, shifted by the offset learned for this arm
-      const ref = add(pts[end].slice(0, 2), this.limbs[i].palmOff || [0, 0]);
-      palms.forEach((p, k) => {
-        const d = Math.min(norm(sub(p.wrist, ref)), norm(sub(p.at, ref)), norm(sub(p.at, pts[end])));
-        if (d <= reach) pairs.push({ i, k, cost: d / reach });
-      });
-    }
-    pairs.sort((a, b) => a.cost - b.cost);
-    const used = new Set();
-    for (const { i, k } of pairs) {
-      if (this.palms[i] || used.has(k)) continue;
-      this.palms[i] = palms[k].at;
-      used.add(k);
-    }
-  }
-
-  // The palm and the pose estimate sit a little apart, so switching between them as the hand
-  // landmarker blinks would flick the platform back and forth. While both are seen, learn the
-  // offset between them; when only the pose is seen, add that offset back (fading out), so either
-  // source lands in the same place.
-  withPalm(h, found, palm, t) {
-    const pose = found && !found.offScreen ? found : null;
-    if (palm) {
-      if (pose) {
-        const d = sub(palm, pose.at);
-        h.palmOff = h.palmOff ? add(h.palmOff, mul(sub(d, h.palmOff), PALM_OFF_RATE)) : d;
-      }
-      h.palmSeen = t;
-      h.inView = true;
-      return { at: palm, direct: true };
-    }
-    if (pose && h.palmOff) {
-      const k = Math.exp(-(t - h.palmSeen) / PALM_FADE_S);
-      if (k < 0.02) h.palmOff = null;
-      else return { ...pose, at: add(pose.at, mul(h.palmOff, k)) };
-    }
-    return found;
-  }
-
   live(i, t = this.app.now) {
     const h = this.limbs[i];
     return !!(h.pos && t - h.seen <= GRACE_S);
@@ -307,7 +244,9 @@ export class Juggle {
     const target = this.at || [this.W / 2, this.H / 2];
     bodies.sort((a, b) => norm(sub(a.at, target)) - norm(sub(b.at, target)));
     const { pts, at } = bodies[0];
-    this.matchPalms(pts, frame.hands);
+    // hand-landmarker palms (when the game runs it) for the two hands, see palms.js
+    const palms = matchPalms([0, 1].map((i) => ({ wrist: pts[LIMBS[i][2]], elbow: pts[LIMBS[i][1]], fix: this.limbs[i].palm })),
+      palmPoints(frame.hands, (q) => this.app.toCourt(q)), this.H);
     this.at = at;
     this.playerSeen = frame.t;
 
@@ -316,7 +255,12 @@ export class Juggle {
     LIMBS.forEach(([root, mid, end, tipA, tipB, foot], i) => {
       const h = this.limbs[i];
       let found = this.limbPoint(h, pts, root, mid, end, tipA, tipB, foot);
-      if (!foot) found = this.withPalm(h, found, this.palms?.[i], frame.t);
+      if (!foot) {
+        const pose = found && !found.offScreen ? found : null;
+        const at = h.palm.apply(pose && pose.at, palms[i], frame.t);
+        if (palms[i]) [found, h.inView] = [{ at, direct: true }, true];
+        else if (pose) found = { ...pose, at };
+      }
       if (found && found.offScreen) {
         h.reset();
         return;
