@@ -1,4 +1,4 @@
-// Finger Pong's fire hands (?fx=fire, or the h key): each player's hand is cut out of the camera
+// Finger Pong's fire hands (on by default; the h key toggles them, ?fx=nofire starts without): each player's hand is cut out of the camera
 // image, tinted in their colour and drawn undimmed over the video, with flames licking off the
 // fingertips and a glow that flares when their bouncer hits the ball.
 //
@@ -24,7 +24,7 @@ const BALL_RATE = 120; // ball flames per second
 const FLASH_S = 0.45; // a hit's glow fades over this long
 
 export class HandFire {
-  static on = FLAGS.fx === "fire";
+  static on = FLAGS.fx !== "nofire" && FLAGS.fx !== "0";
 
   constructor(app) {
     this.app = app;

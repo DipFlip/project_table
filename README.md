@@ -126,7 +126,7 @@ drawing briefly), CPU as a last resort; the stats panel says which. `?tracker=wo
 minutes to copy; `?fx=0` and `?sound=0` turn off particles and sound to compare, `?delegate=cpu` runs
 MediaPipe on the CPU.
 
-`?fx=fire` (or the h key) gives Finger Pong fire hands: each player's hand is cut out of the camera
+Finger Pong has fire hands on by default (the h key toggles them, `?fx=nofire` starts without): each player's hand is cut out of the camera
 image, tinted in their colour, with flames and smoke off the fingertips and a glow that flares on a hit;
 the ball burns in the colour of whoever hit it last, and hits, wall bounces and goals throw sparks
 (`web/handfire.js`). The cut-out is a soft mask built from the 21 hand landmarks already tracked, so it

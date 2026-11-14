@@ -96,7 +96,7 @@ class HandPong {
     this.players = [new Player("left", this.field, 0), new Player("right", this.field, 1)];
     this.hands = [new Hand(), new Hand()];
     this.frameN = -1;
-    this.fire = new HandFire(app); // ?fx=fire or h: tinted hands with flames
+    this.fire = new HandFire(app); // on by default, h toggles: tinted hands with flames
     this.newMatch(app.now);
   }
 
