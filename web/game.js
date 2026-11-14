@@ -433,16 +433,17 @@ const GAMES = {
   juggle: {
     Scene: Juggle, what: "body", zoom: 2,
     grab: 1280,
-    task: "pose", model: POSE_MODEL, hands: HAND_HELP, options: {
-      runningMode: "VIDEO", numPoses: 1, // one player: stays on fast ROI tracking without hunting for extra bodies
+    // everyone in view plays (up to 4), each with their own platforms
+    task: "pose", model: POSE_MODEL, hands: HAND_HELP && { ...HAND_HELP, options: { ...HAND_HELP.options, numHands: 4 } }, options: {
+      runningMode: "VIDEO", numPoses: 4,
       minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.3, minTrackingConfidence: 0.3,
     },
   },
   color: {
     Scene: ColorJuggle, what: "body", zoom: 2,
     grab: 1280,
-    task: "pose", model: POSE_MODEL, hands: HAND_HELP, options: {
-      runningMode: "VIDEO", numPoses: 1,
+    task: "pose", model: POSE_MODEL, hands: HAND_HELP && { ...HAND_HELP, options: { ...HAND_HELP.options, numHands: 4 } }, options: {
+      runningMode: "VIDEO", numPoses: 4,
       minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.3, minTrackingConfidence: 0.3,
     },
   },

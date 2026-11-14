@@ -81,12 +81,13 @@ view it's level with it and mirrored across your head, with none it sits just ab
 head. A ball above the screen shows as an arrow on the top edge; it scores for the other
 side when it lands. First to 11.
 
-Juggling (`web/juggle.js`) uses the same full-body pose tracking and side-view gravity for
-one player, with four uniquely coloured platforms on both hands and both feet that aim
-towards the opposite hand and shift left or right as you move sideways. Each ball is allowed
-one floor bounce between touches; Juggling ramps up from one ball until the last ball is
-lost, while Colour Juggle keeps one ball that changes colour to show which limb must bounce
-it next (any wrong-limb touch is game over). Both also run MediaPipe's hand landmarker on each
+Juggling (`web/juggle.js`) uses the same full-body pose tracking and side-view gravity, with
+four uniquely coloured platforms on both hands and both feet that aim towards the opposite hand
+and shift left or right as you move sideways. Everyone in view (up to four) gets their own
+platforms. In Juggling each ball is allowed one floor bounce between touches, and it ramps up
+from one ball until the last ball is lost. Colour Juggle keeps one ball that changes colour to
+show which limb (anyone's) must bounce it next; it goes straight through the other platforms,
+and it has three hearts for the whole round, shown top left: each floor bounce costs one. Both also run MediaPipe's hand landmarker on each
 frame: a hand found near a body's wrist puts that platform on its palm, which is steadier than
 the pose wrist up close (`?hands=0` turns it off; the `?debug=1` panel counts palms per frame).
 Volleyball does the same, matching up to four hands across all players.

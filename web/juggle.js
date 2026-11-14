@@ -36,6 +36,9 @@ const FOOT_IN = 0.65, FOOT_OUT = 0.4; // stricter for ankles so cut-off legs at 
 const HOLD_S = 0.25; // hold a dropped hand where it was last seen this long
 const EXTEND = 0.85; // wrist lost, elbow + shoulder seen: extend straight past the elbow
 const GRACE_S = 0.5; // keep the player through short tracking dropouts
+const MAX_PLAYERS = 4; // everyone in view gets their own four platforms, up to this many
+const PLAYER_JUMP = 0.25; // a body this far (x screen width) from every player is someone new
+const HEARTS = 3; // Colour Juggle: floor bounces the ball has, for the whole round
 const PREDICT_S = 0.035; // extrapolate a platform towards "now" by at most this much
 const JUMP = 0.3; // a limb jumping further than this (x screen width) restarts its smoothing
 const SERVE_S = 1.5; // countdown before the first ball
@@ -128,9 +131,10 @@ export class Juggle {
     this.half = (PAD_W * H) / 2;
     this.thick = Math.max(6, Math.round(H * 0.014));
     this.floorY = H - 6;
-    this.limbs = LIMBS.map((l) => new LimbPad(l[5]));
-    this.at = null; // player's head/shoulders, to pick the tracked player and aim spawns
-    this.playerSeen = -1e9;
+    // limb i belongs to player slot i / 4 and is limb kind i % 4 (left hand, right hand, left foot, right foot)
+    this.limbs = Array.from({ length: MAX_PLAYERS * 4 }, (_, i) => new LimbPad(LIMBS[i % 4][5]));
+    this.slots = Array.from({ length: MAX_PLAYERS }, () => ({ at: null, seen: -1e9 })); // each player's head/shoulders
+    this.at = null; // the first player's head/shoulders, to aim new balls
     this.frameN = -1;
     this.modeKey = "juggle";
     this.hudColor = GOLD;
@@ -199,14 +203,14 @@ export class Juggle {
   // where limb i aims its base bounce: each hand aims at the other hand; each foot aims at the
   // opposite / furthest-away hand (falling back across the body centre when only one hand is seen)
   aimTarget(i, fromPos, t = this.app.now) {
-    const W = this.W, H = this.H;
-    const cx = this.at ? this.at[0] : W / 2;
-    if (i < 2) {
-      const other = 1 - i;
+    const W = this.W, H = this.H, k = i % 4, base = i - k, at = this.slots[base / 4].at;
+    const cx = at ? at[0] : W / 2;
+    if (k < 2) {
+      const other = base + 1 - k;
       if (this.live(other, t)) return this.limbs[other].pos;
       return [clamp(2 * cx - fromPos[0], W * 0.15, W * 0.85), fromPos[1]];
     }
-    const hands = [0, 1].filter((j) => this.live(j, t)).map((j) => this.limbs[j].pos);
+    const hands = [base, base + 1].filter((j) => this.live(j, t)).map((j) => this.limbs[j].pos);
     if (hands.length === 2) {
       const score = (hp) => Math.abs(hp[0] - fromPos[0]) + 0.3 * norm(sub(hp, fromPos));
       return score(hands[0]) >= score(hands[1]) ? hands[0] : hands[1];
@@ -230,83 +234,57 @@ export class Juggle {
     const frame = this.app.frame;
     if (!frame || frame.n === this.frameN) return;
     this.frameN = frame.n;
+    const t = frame.t;
     const bodies = frame.found.map((lm) => {
       const pts = lm.map((q) => [...this.app.toCourt(q), q[2]]);
       return { pts, at: this.anchor(pts) };
     }).filter((b) => b.at);
 
-    if (!bodies.length) {
-      if (frame.t - this.playerSeen > GRACE_S) {
-        this.at = null;
-        this.limbs.forEach((h) => h.reset());
-      }
-      return;
+    // everyone keeps their slot from frame to frame (nearest first); newcomers take a free one
+    const pairs = [];
+    bodies.forEach((b, i) => this.slots.forEach((sl, j) => sl.at && pairs.push([norm(sub(b.at, sl.at)), i, j])));
+    pairs.sort((x, y) => x[0] - y[0]);
+    const slotOf = new Map(), taken = new Set();
+    for (const [d, i, j] of pairs) {
+      if (d > PLAYER_JUMP * this.W || slotOf.has(i) || taken.has(j)) continue;
+      slotOf.set(i, j);
+      taken.add(j);
     }
-    const target = this.at || [this.W / 2, this.H / 2];
-    bodies.sort((a, b) => norm(sub(a.at, target)) - norm(sub(b.at, target)));
-    const { pts, at } = bodies[0];
-    // hand-landmarker palms (when the game runs it) for the two hands, see palms.js
-    const palms = matchPalms([0, 1].map((i) => ({ wrist: pts[LIMBS[i][2]], elbow: pts[LIMBS[i][1]], fix: this.limbs[i].palm })),
-      palmPoints(frame.hands, (q) => this.app.toCourt(q)), this.H);
-    this.at = at;
-    this.playerSeen = frame.t;
-
-    const W = this.W, H = this.H;
-    const dts = [0, 0, 0, 0];
-    LIMBS.forEach(([root, mid, end, tipA, tipB, foot], i) => {
-      const h = this.limbs[i];
-      let found = this.limbPoint(h, pts, root, mid, end, tipA, tipB, foot);
-      if (!foot) {
-        const pose = found && !found.offScreen ? found : null;
-        const at = h.palm.apply(pose && pose.at, palms[i], frame.t);
-        if (palms[i]) [found, h.inView] = [{ at, direct: true }, true];
-        else if (pose) found = { ...pose, at };
-      }
-      if (found && found.offScreen) {
-        h.reset();
-        return;
-      }
-      const prevRaw = h.raw;
-      if (found) {
-        // keep visible feet just above the floor trigger so low foot saves catch before the floor
-        h.raw = foot ? [found.at[0], Math.min(found.at[1], this.floorY - 4)] : found.at;
-        h.rawAt = frame.t;
-        h.direct = found.direct;
-      }
-      if (!h.raw || frame.t - h.rawAt > HOLD_S) {
-        if (frame.t - h.seen > GRACE_S) h.reset();
-        return;
-      }
-      if (h.pos && norm(sub(h.raw, h.pos)) > JUMP * W) {
-        const keep = [h.raw, h.rawAt, h.inView, h.direct];
-        h.reset();
-        [h.raw, h.rawAt, h.inView, h.direct] = keep;
-      }
-      const dt = h.t !== null ? frame.t - h.t : 0;
-      dts[i] = dt;
-      const x = h.filter.filter(h.raw, dt);
-      h.pos = [x[0], x[1]];
-      if (found && prevRaw && dt > 0) {
-        // velocity from raw landmarks (lightly smoothed) so stopping drops to zero on the very next frame
-        const av = alpha(14.0, dt);
-        h.vel = [
-          h.vel[0] + av * ((h.raw[0] - prevRaw[0]) / dt - h.vel[0]),
-          h.vel[1] + av * ((h.raw[1] - prevRaw[1]) / dt - h.vel[1]),
-        ];
-      } else if (!found && dt > 0) {
-        h.vel = mul(h.vel, Math.exp(-dt * 25));
-      } else {
-        h.vel = [0, 0];
-      }
-      h.t = frame.t;
-      if (found) h.seen = frame.t;
+    bodies.forEach((b, i) => {
+      if (slotOf.has(i)) return;
+      const j = this.slots.findIndex((sl, k) => !sl.at && !taken.has(k));
+      if (j < 0) return;
+      slotOf.set(i, j);
+      taken.add(j);
     });
+    this.slots.forEach((sl, j) => {
+      if (taken.has(j) || !sl.at || t - sl.seen <= GRACE_S) return;
+      sl.at = null; // gone a while: free the slot
+      for (let k = 0; k < 4; k++) this.limbs[4 * j + k].reset();
+    });
+
+    // hand-landmarker palms (when the game runs it) matched across everyone's wrists, see palms.js
+    const arms = [], armLimb = [];
+    for (const [i, j] of slotOf) for (const k of [0, 1]) {
+      arms.push({ wrist: bodies[i].pts[LIMBS[k][2]], elbow: bodies[i].pts[LIMBS[k][1]], fix: this.limbs[4 * j + k].palm });
+      armLimb.push(4 * j + k);
+    }
+    const matched = matchPalms(arms, palmPoints(frame.hands, (q) => this.app.toCourt(q)), this.H);
+    const palms = new Map(armLimb.map((li, n) => [li, matched[n]]));
+
+    const dts = this.limbs.map(() => 0);
+    for (const [i, j] of slotOf) {
+      Object.assign(this.slots[j], { at: bodies[i].at, seen: t });
+      this.trackLimbs(bodies[i].pts, 4 * j, palms, t, dts);
+    }
+    this.at = this.slots.find((sl) => sl.at)?.at || null;
+    const H = this.H;
 
     // update base tilt towards the target hand + left/right offset from movement angle and speed
     this.limbs.forEach((h, i) => {
-      if (!h.pos || frame.t - h.seen > GRACE_S) return;
+      if (!h.pos || t - h.seen > GRACE_S) return;
       const dt = dts[i];
-      const aim = this.arcVel(h.pos, this.aimTarget(i, h.pos, frame.t), h.foot);
+      const aim = this.arcVel(h.pos, this.aimTarget(i, h.pos, t), h.foot);
       const wantBase = clamp(Math.atan2(aim[0], -aim[1]) * 0.55, -MAX_BASE_TILT, MAX_BASE_TILT);
       const vx = Math.abs(h.vel[0]) / H, vy = Math.abs(h.vel[1]) / H;
       const moveAngleFactor = clamp((Math.atan2(vx, vy) - 0.16) / 0.34, 0, 1);
@@ -322,8 +300,73 @@ export class Juggle {
     });
   }
 
+  // one player's four limbs (limbs base .. base + 3) from their body's landmarks
+  trackLimbs(pts, base, palms, t, dts) {
+    const W = this.W;
+    LIMBS.forEach(([root, mid, end, tipA, tipB, foot], k) => {
+      const i = base + k, h = this.limbs[i], palm = palms.get(i);
+      let found = this.limbPoint(h, pts, root, mid, end, tipA, tipB, foot);
+      if (!foot) {
+        const pose = found && !found.offScreen ? found : null;
+        const at = h.palm.apply(pose && pose.at, palm, t);
+        if (palm) [found, h.inView] = [{ at, direct: true }, true];
+        else if (pose) found = { ...pose, at };
+      }
+      if (found && found.offScreen) {
+        h.reset();
+        return;
+      }
+      const prevRaw = h.raw;
+      if (found) {
+        // keep visible feet just above the floor trigger so low foot saves catch before the floor
+        h.raw = foot ? [found.at[0], Math.min(found.at[1], this.floorY - 4)] : found.at;
+        h.rawAt = t;
+        h.direct = found.direct;
+      }
+      if (!h.raw || t - h.rawAt > HOLD_S) {
+        if (t - h.seen > GRACE_S) h.reset();
+        return;
+      }
+      if (h.pos && norm(sub(h.raw, h.pos)) > JUMP * W) {
+        const keep = [h.raw, h.rawAt, h.inView, h.direct];
+        h.reset();
+        [h.raw, h.rawAt, h.inView, h.direct] = keep;
+      }
+      const dt = h.t !== null ? t - h.t : 0;
+      dts[i] = dt;
+      const x = h.filter.filter(h.raw, dt);
+      h.pos = [x[0], x[1]];
+      if (found && prevRaw && dt > 0) {
+        // velocity from raw landmarks (lightly smoothed) so stopping drops to zero on the very next frame
+        const av = alpha(14.0, dt);
+        h.vel = [
+          h.vel[0] + av * ((h.raw[0] - prevRaw[0]) / dt - h.vel[0]),
+          h.vel[1] + av * ((h.raw[1] - prevRaw[1]) / dt - h.vel[1]),
+        ];
+      } else if (!found && dt > 0) {
+        h.vel = mul(h.vel, Math.exp(-dt * 25));
+      } else {
+        h.vel = [0, 0];
+      }
+      h.t = t;
+      if (found) h.seen = t;
+    });
+  }
+
   wantScale(i) {
     return 1;
+  }
+
+  // whether limb i can hit this ball (in Colour Juggle only the ball's colour can; others let it through)
+  canHit(ball, i) {
+    return true;
+  }
+
+  // the ball reaching the floor: true if it bounces back up, false if it's lost
+  floorHit(ball, now) {
+    if (ball.bounced) return false;
+    ball.bounced = true;
+    return true;
   }
 
   stepScales(dt) {
@@ -406,9 +449,6 @@ export class Juggle {
       return this.clampVel(ball);
     }
     if (dot(sub(ball.vel, effU), n) >= 0) return;
-    if (ball.targetLimb !== undefined && i !== ball.targetLimb) {
-      return this.wrongLimb(ball, i, now);
-    }
 
     ball.bounced = false; // touching a valid hand or foot refreshes the ball's one allowed ground bounce
     const scoopUp = Math.max(0, -u[1]) * SCOOP_GAIN;
@@ -435,6 +475,7 @@ export class Juggle {
   }
 
   touch(ball, i, pad, now) {
+    if (!this.canHit(ball, i)) return false;
     const [a, b, u] = pad, reach = this.r + this.padThick(i);
     const cp = closest(ball.pos, a, b), d = sub(ball.pos, cp), dist = norm(d);
     if (dist >= reach || dist < 1e-6) return false;
@@ -514,8 +555,7 @@ export class Juggle {
           break;
         }
         if (ball.pos[1] > this.floorY - this.r && ball.vel[1] > 0) {
-          if (!ball.bounced) {
-            ball.bounced = true;
+          if (this.floorHit(ball, now)) {
             ball.pos[1] = this.floorY - this.r;
             ball.vel[1] = -Math.max(ball.vel[1] * FLOOR_BOUNCE, FLOOR_POP * this.H);
             this.app.sound.play("wall", 0.8);
@@ -535,7 +575,7 @@ export class Juggle {
       // fast scoops or kicks crossing a ball between camera frames
       for (let i = 0; i < nLimbs; i++) {
         const pad = pads[i], old = this.prevPads[i];
-        if (!pad || !old) continue;
+        if (!pad || !old || !this.canHit(ball, i)) continue;
         const s0 = side(prev, old), s1 = side(ball.pos, pad);
         const [a, b] = pad, ab = sub(b, a), L = Math.max(norm(ab), 1e-6), along = dot(sub(ball.pos, a), ab) / L;
         if (s0 * s1 < 0 && along >= -this.r && along <= L + this.r) {
@@ -593,7 +633,7 @@ export class Juggle {
       const [a, b] = pad, h = this.limbs[i], thick = this.padThick(i);
       const lit = now - h.flashAt < 0.15;
       const alpha = h.direct ? 1 : 0.6;
-      for (const [col, w] of [["rgba(0,0,0,0.8)", thick * 2 + 6], [lit ? "white" : rgb(LIMB_COLORS[i], alpha), thick * 2]]) {
+      for (const [col, w] of [["rgba(0,0,0,0.8)", thick * 2 + 6], [lit ? "white" : rgb(LIMB_COLORS[i % 4], alpha), thick * 2]]) {
         c.strokeStyle = col;
         c.lineWidth = w;
         c.beginPath();
@@ -680,8 +720,9 @@ export class Juggle {
 }
 
 // One-ball colour-matching mode: the ball takes the colour of the limb you must bounce it with
-// next; touching it with any other limb (or letting it bounce twice on the floor) is game over,
-// then a fresh ball drops automatically after a few seconds.
+// next (anyone's hand or foot of that colour) and goes straight through the other platforms. It
+// has three hearts for the whole round: every floor bounce costs one, and the last one ends the
+// round; then a fresh ball drops automatically after a few seconds.
 export class ColorJuggle extends Juggle {
   constructor(app) {
     super(app);
@@ -692,17 +733,29 @@ export class ColorJuggle extends Juggle {
 
   newMatch(now, delay = 2.0) {
     super.newMatch(now, delay);
+    this.hearts = HEARTS;
     if (this.modeKey === "color") this.hudColor = SKY;
   }
 
   wantScale(i) {
     const b = this.balls[0];
     if (!b) return 1;
-    return i === b.targetLimb ? 1 : INACTIVE_SCALE;
+    return i % 4 === b.targetLimb ? 1 : INACTIVE_SCALE;
   }
 
+  canHit(ball, i) {
+    return i % 4 === ball.targetLimb;
+  }
+
+  floorHit(ball, now) {
+    this.hearts--;
+    this.heartLostAt = now;
+    return this.hearts > 0;
+  }
+
+  // the limb kind (0-3) that bounces the ball next: one someone in view has, unlike the last
   pickNextLimb(now, exclude = -1) {
-    const active = [0, 1, 2, 3].filter((j) => this.live(j, now));
+    const active = [0, 1, 2, 3].filter((k) => this.limbs.some((_, i) => i % 4 === k && this.live(i, now)));
     const pool = active.length ? active : [0, 1];
     const diff = pool.filter((j) => j !== exclude);
     const choices = diff.length ? diff : pool;
@@ -724,20 +777,11 @@ export class ColorJuggle extends Juggle {
   }
 
   onValidHit(ball, i, now) {
-    const next = this.pickNextLimb(now, i);
+    const next = this.pickNextLimb(now, i % 4);
     ball.targetLimb = next;
     ball.color = LIMB_COLORS[next];
     this.hudColor = ball.color;
     this.app.fx.ring(ball.pos, ball.color, this.r * 1.4, { n: 16, speed: 95, life: 0.35 });
-  }
-
-  wrongLimb(ball, i, now) {
-    this.limbs[i].flashAt = now;
-    this.app.fx.burst(ball.pos, LIMB_COLORS[i], {
-      n: 55, speed: 440, life: 0.7, size: 5, colors: [LIMB_COLORS[i], ball.color, [255, 90, 90]],
-    });
-    this.balls = [];
-    this.endRound(now, "wrong colour");
   }
 
   drop(idx, now) {
@@ -746,11 +790,40 @@ export class ColorJuggle extends Juggle {
       n: 60, speed: 460, life: 0.75, size: 5,
       direction: -Math.PI / 2, spread: 2.0, colors: [ball.color, [255, 255, 255]],
     });
-    this.endRound(now, "missed");
+    this.endRound(now, "out of hearts");
+  }
+
+  draw(c, now) {
+    super.draw(c, now);
+    // the hearts left, top left; a lost one pops for a moment
+    const H = this.H, size = H * 0.045;
+    for (let k = 0; k < HEARTS; k++) {
+      const x = size * 1.3 + k * size * 2.4, y = size * 1.4, full = k < this.hearts;
+      const pop = !full && k === this.hearts && now - (this.heartLostAt ?? -1e9) < 0.4 ? 1 + 0.6 * (1 - (now - this.heartLostAt) / 0.4) : 1;
+      heart(c, x, y, size * pop, full);
+    }
   }
 
   afterGameOver(now) {
     this.newMatch(now, 0);
     if (this.ready()) this.spawnBall(now);
   }
+}
+
+// a heart centred at (x, y), about 2s wide: filled red, or an empty outline
+function heart(c, x, y, s, full) {
+  c.save();
+  c.translate(x, y);
+  c.beginPath();
+  c.moveTo(0, s * 0.95);
+  c.bezierCurveTo(-s * 1.25, s * 0.15, -s * 1.05, -s * 0.95, 0, -s * 0.35);
+  c.bezierCurveTo(s * 1.05, -s * 0.95, s * 1.25, s * 0.15, 0, s * 0.95);
+  c.closePath();
+  c.lineJoin = "round";
+  c.lineWidth = Math.max(3, s * 0.22);
+  c.strokeStyle = "black";
+  c.stroke();
+  c.fillStyle = full ? "rgb(240,60,80)" : "rgba(255,255,255,0.15)";
+  c.fill();
+  c.restore();
 }
