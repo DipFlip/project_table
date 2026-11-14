@@ -24,16 +24,16 @@ const SIDE_IN = 0.48, SIDE_OUT = 0.62;
 
 // joint -> MediaPipe pose landmark(s) (an array is their midpoint)
 const LANDMARK = {
-  earL: 7, earR: 8, shL: 11, shR: 12, elL: 13, elR: 14, wrL: 15, wrR: 16, handL: [17, 19], handR: [18, 20],
+  nose: 0, eyeL: 2, eyeR: 5, earL: 7, earR: 8, mouthL: 9, mouthR: 10, shL: 11, shR: 12, elL: 13, elR: 14, wrL: 15, wrR: 16, handL: [17, 19], handR: [18, 20],
   hipL: 23, hipR: 24, knL: 25, knR: 26, anL: 27, anR: 28, toeL: 31, toeR: 32,
 };
 // a bone whose joints aren't tracked carries on rigidly from its parent (an arm hangs from the chest)
 const PARENT = {
-  pelvis: "chest", head: "chest", upperL: "chest", foreL: "upperL", handL: "foreL", upperR: "chest", foreR: "upperR", handR: "foreR",
+  pelvis: "chest", head: "chest", mouth: "head", upperL: "chest", foreL: "upperL", handL: "foreL", upperR: "chest", foreR: "upperR", handR: "foreR",
   thighL: "pelvis", shinL: "thighL", footL: "shinL", thighR: "pelvis", shinR: "thighR", footR: "shinR",
 };
 const SIDE_PARENT = {
-  head: "spine", upperN: "spine", foreN: "upperN", handN: "foreN", upperF: "spine", foreF: "upperF", handF: "foreF",
+  head: "spine", mouth: "head", upperN: "spine", foreN: "upperN", handN: "foreN", upperF: "spine", foreF: "upperF", handF: "foreF",
   thighN: "spine", shinN: "thighN", footN: "shinN", thighF: "spine", shinF: "thighF", footF: "shinF",
 };
 const BONE_NAMES = Object.keys(BONES);
@@ -231,11 +231,50 @@ function poseSide(P, facing) {
       a = name === "spine" ? sh : name === "head" ? ear : live(bone.live[0]);
       b = name === "spine" ? hip : live(bone.live[1]);
     }
-    if (a && b && norm(sub(b, a)) > 2) maps[name] = boneMap(restSide(bone.from, facing), restSide(bone.to, facing), a, b, size, bone.uniform);
+    if (name === "head") {
+      const pairs = [["ear", ear], ["eye", live("eyeN")], ["nose", nose], ["mouth", live("mouthN")]].filter(([, q]) => q).map(([j, q]) => [restSide(j, facing), q]);
+      const plain = a && b && norm(sub(b, a)) > 2 ? boneMap(restSide("ear", facing), restSide("nose", facing), a, b, size, true) : null;
+      maps.head = headMap(pairs, plain, maps.spine);
+    } else if (name === "mouth") maps.mouth = pinMap(maps.head, restSide("mouth", facing), live("mouthN"));
+    else if (a && b && norm(sub(b, a)) > 2) maps[name] = boneMap(restSide(bone.from, facing), restSide(bone.to, facing), a, b, size, bone.uniform);
     else maps[name] = maps[SIDE_PARENT[name]];
   }
   return SIDE_NAMES.map((n) => maps[n]);
 }
+
+// --- the head: fitted to the face points --------------------------------------------------------
+const FACE_FIT = 0.7; // share of the face fit in the head's map; the rest is the plain ear-to-ear (or ear-to-nose) one
+const applyMap = (m, p) => [m[0] * p[0] + m[1] * p[1] + m[4], m[2] * p[0] + m[3] * p[1] + m[5]];
+const blendMaps = (a, b, k) => a.map((v, i) => v * k + b[i] * (1 - k));
+// the least-squares affine map taking rest points onto live ones ([[rest, live]...], at least 3 not
+// in a line), or null
+function fitMap(pairs) {
+  if (pairs.length < 3) return null;
+  const n = pairs.length, pm = [0, 0], qm = [0, 0];
+  for (const [p, q] of pairs) [pm[0], pm[1], qm[0], qm[1]] = [pm[0] + p[0] / n, pm[1] + p[1] / n, qm[0] + q[0] / n, qm[1] + q[1] / n];
+  let sxx = 0, sxy = 0, syy = 0, ux = 0, uy = 0, vx = 0, vy = 0;
+  for (const [p, q] of pairs) {
+    const x = p[0] - pm[0], y = p[1] - pm[1], u = q[0] - qm[0], v = q[1] - qm[1];
+    sxx += x * x; sxy += x * y; syy += y * y;
+    ux += u * x; uy += u * y; vx += v * x; vy += v * y;
+  }
+  const det = sxx * syy - sxy * sxy;
+  if (det < 1e-6 * (sxx + syy) ** 2) return null;
+  const m00 = (ux * syy - uy * sxy) / det, m01 = (uy * sxx - ux * sxy) / det;
+  const m10 = (vx * syy - vy * sxy) / det, m11 = (vy * sxx - vx * sxy) / det;
+  return [m00, m01, m10, m11, qm[0] - (m00 * pm[0] + m01 * pm[1]), qm[1] - (m10 * pm[0] + m11 * pm[1])];
+}
+// the head's map: a fit to whichever face points are tracked, steadied by the plain two-point map
+function headMap(pairs, plain, parent) {
+  const fit = fitMap(pairs);
+  return fit && plain ? blendMaps(fit, plain, FACE_FIT) : fit || plain || parent;
+}
+// the same map moved so that `rest` lands exactly on `live` (the mouth on the tracked mouth)
+const pinMap = (m, rest, live) => {
+  if (!m || !live) return m;
+  const at = applyMap(m, rest);
+  return [m[0], m[1], m[2], m[3], m[4] + live[0] - at[0], m[5] + live[1] - at[1]];
+};
 
 // tracked joints (court px, visibility) -> one affine map per bone, or null without shoulders
 function poseBones(P) {
@@ -249,8 +288,13 @@ function poseBones(P) {
   const maps = {};
   for (const name of BONE_NAMES) {
     const bone = BONES[name], a = !bone.rigid && joint(bone.from), b = !bone.rigid && joint(bone.to);
-    // the shoulder-to-elbow and hip-to-knee bones start where the chest and pelvis put them
-    if (a && b && norm(sub(b, a)) > 2) maps[name] = boneMap(REST[bone.from], REST[bone.to], a, b, size, bone.uniform);
+    if (name === "head") {
+      const pairs = ["earL", "earR", "eyeL", "eyeR", "nose", "mouthL", "mouthR"].map((j) => [REST[j], joint(j)]).filter(([, q]) => q);
+      const plain = a && b && norm(sub(b, a)) > 2 ? boneMap(REST.earL, REST.earR, a, b, size, true) : null;
+      maps.head = headMap(pairs, plain, maps.chest);
+    } else if (name === "mouth") {
+      maps.mouth = a && b ? pinMap(maps.head, mul(add(REST.mouthL, REST.mouthR), 0.5), mul(add(a, b), 0.5)) : maps.head;
+    } else if (a && b && norm(sub(b, a)) > 2) maps[name] = boneMap(REST[bone.from], REST[bone.to], a, b, size, bone.uniform);
     else maps[name] = maps[PARENT[name]];
   }
   return BONE_NAMES.map((n) => maps[n]);

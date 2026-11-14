@@ -341,6 +341,10 @@ function template() {
   // the neck's end tucks under the torso without an outline, like the limbs'
   const head = L("head")
     .limb(blend(8, capsule([512, 300], [512, 372], 32), blend(14, ellipse([512, 205], 88, 102), ellipse([512, 262], 62, 52)), ellipse(J.earL, 15, 25), ellipse(J.earR, 15, 25)), [512, 348], [512, 200], { fill: skin, thick: 70 });
+  // where the tracker puts the eyes, nose and mouth: draw faces over these
+  for (const e of [J.eyeL, J.eyeR]) head.paint(ellipse(e, 11, 7), { fill: hex("#5d5750"), ink: 0, shade: false });
+  head.paint(ellipse(J.nose, 9, 12), { fill: hex("#c9c2b8"), ink: 2.5, thick: 9 });
+  head.paint(capsule(J.mouthL, J.mouthR, 4), { fill: hex("#8f6f6a"), ink: 0, shade: false });
   return { back: new Layer("back"), legs, torso, arms, head };
 }
 
@@ -582,6 +586,8 @@ const SIDE_ART = {
     const torso = new Layer("torso").paint(sideTorso(), { fill: skin, thick: 80 });
     const head = new Layer("head").limb(blend(8, capsule([C - 14, 300], [C - 14, 372], 32),
       blend(16, ellipse([C - 4, 205], 94, 102), ellipse([C + 40, 266], 48, 46), circle(K.nose, 13)), ellipse(K.ear, 14, 24)), [C - 14, 352], [C - 14, 200], { fill: skin, thick: 70 });
+    head.paint(ellipse(K.eye, 6, 7), { fill: hex("#5d5750"), ink: 0, shade: false });
+    head.paint(capsule(add(K.mouth, [-14, -1]), K.mouth, 4), { fill: hex("#8f6f6a"), ink: 0, shade: false });
     return { back: new Layer("back"), torso, head };
   },
   astronaut() {
