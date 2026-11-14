@@ -7,7 +7,7 @@
 // player turns side-on. The c key cycles the costume; ?skin=astronaut (werewolf, robot, farmer,
 // mix) starts with one. Drawing a new one: costumes/README.md.
 import { add, sub, mul, norm, OneEuro } from "./common.js";
-import { REST, BONES, PARTS, REST_SIDE, SIDE_BONES, SIDE_PARTS, SIDE_CENTER } from "./rest.js";
+import { REST, BONES, PARTS, REST_SIDE, SIDE_BONES, SIDE_PARTS, SIDE_CENTER, BALL } from "./rest.js";
 
 export const SKINS = ["none", "astronaut", "werewolf", "robot", "farmer", "mix"];
 const CAST = ["astronaut", "werewolf", "robot", "farmer"];
@@ -76,6 +76,39 @@ function partLayers(nodes, parts, inherited = null, out = []) {
   }
   return out;
 }
+// the costume's "ball" layer cut out to the ball's circle on a canvas, or null if none is painted
+function ballArt(nodes) {
+  const find = (ns) => {
+    for (const n of ns || []) {
+      if (n.hidden || (n.children && ["template", "side"].includes(firstWord(n)))) continue;
+      if (n.children) {
+        const f = find(n.children);
+        if (f) return f;
+      } else if (firstWord(n) === "ball" && n.imageData && n.imageData.width > 1) return n;
+    }
+    return null;
+  };
+  const layer = find(nodes);
+  if (!layer) return null;
+  const { r, at } = BALL, cv = document.createElement("canvas");
+  cv.width = cv.height = 2 * r;
+  const img = layer.imageData, tmp = document.createElement("canvas");
+  [tmp.width, tmp.height] = [img.width, img.height];
+  tmp.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(img.data), img.width, img.height), 0, 0);
+  cv.getContext("2d").drawImage(tmp, layer.left - (at[0] - r), layer.top - (at[1] - r));
+  return cv;
+}
+
+// draw a costume's ball art at a game ball (x, y, radius r), turned as if it rolls along x
+export function drawBallArt(c, art, x, y, r) {
+  const s = r * 1.2; // the art's circle is drawn a little bigger than the ball that bounces
+  c.save();
+  c.translate(x, y);
+  c.rotate(x / r);
+  c.drawImage(art, -s, -s, 2 * s, 2 * s);
+  c.restore();
+}
+
 // the side group, used even while it's hidden in Photoshop to look at the front on its own
 const sideGroup = (nodes) => (nodes || []).find((n) => n.children && firstWord(n) === "side");
 
@@ -352,12 +385,21 @@ export class Costumes {
             return m;
           });
         const side = make(sideGroup(psd.children)?.children, SIDE_PARTS, true);
-        this.costumes[n] = { front: make(psd.children, PARTS, false), side, sideLeft: side.map(mirrored) };
+        this.costumes[n] = { front: make(psd.children, PARTS, false), side, sideLeft: side.map(mirrored), ball: ballArt(psd.children) };
       }).catch((e) => {
         console.error(`costume ${n}:`, e);
-        this.costumes[n] = { front: [], side: [], sideLeft: [] };
+        this.costumes[n] = { front: [], side: [], sideLeft: [], ball: null };
       });
     }
+  }
+
+  // the ball art for the costume on (with "mix", the first costume that has one), or null
+  ballArt() {
+    for (const n of this.skin === "mix" ? CAST : [this.skin]) {
+      const costume = this.costumes[n];
+      if (costume && !(costume instanceof Promise) && costume.ball) return costume.ball;
+    }
+    return null;
   }
 
   next(now) {

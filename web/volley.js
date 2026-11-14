@@ -6,6 +6,7 @@
 // the top edge shows where it is) and has no bounce limit; when it lands, the other side scores.
 import { add, sub, mul, dot, norm, perp, clamp, rgb, OneEuro, drawText } from "./common.js";
 import { palmPoints, matchPalms, PalmFix } from "./palms.js";
+import { drawBallArt } from "./rig.js";
 
 const WIN_SCORE = 11;
 const GRAVITY = 1.0; // x screen height per s²
@@ -386,14 +387,18 @@ export class Volleyball {
           c.arc(q[0], q[1], r * (0.25 + 0.6 * k), 0, 2 * Math.PI);
           c.fill();
         });
-        c.fillStyle = "black";
-        c.beginPath();
-        c.arc(x, y, r + 3, 0, 2 * Math.PI);
-        c.fill();
-        c.fillStyle = "rgb(255,255,230)";
-        c.beginPath();
-        c.arc(x, y, r, 0, 2 * Math.PI);
-        c.fill();
+        const art = this.app.puppets?.ballArt(); // the costume's ball (a space rock, a gear...)
+        if (art) drawBallArt(c, art, x, y, r);
+        else {
+          c.fillStyle = "black";
+          c.beginPath();
+          c.arc(x, y, r + 3, 0, 2 * Math.PI);
+          c.fill();
+          c.fillStyle = "rgb(255,255,230)";
+          c.beginPath();
+          c.arc(x, y, r, 0, 2 * Math.PI);
+          c.fill();
+        }
       }
     } else if (this.winner === null) {
       const msg = this.athletes.length ? `serve in ${Math.round(Math.max(0, this.serveAt - now))}` : "step in front of the camera";

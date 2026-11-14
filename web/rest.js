@@ -18,6 +18,10 @@ export const REST = {
   toeL: [346, 1445], toeR: [678, 1445], // feet turned out to the sides
 };
 
+// The ball: painted in this circle (centre, radius) on a "ball" layer, it replaces the game's ball
+// while the costume is on. The game draws it a little bigger than the ball it bounces.
+export const BALL = { at: [890, 150], r: 100 };
+
 // Bones: a rest segment between two joints. A layer's vertices follow the bones of its part,
 // weighted by distance; `reach` widens or narrows a bone's pull. `uniform` bones scale the same
 // across as along (the head keeps its shape); the rest scale across by the body's overall size.

@@ -104,8 +104,8 @@ side view, mirrored for a player facing left, and back once they turn under abou
 
 To make a costume in Photoshop: copy `template.psd` (the mannequin is in a `template` group the
 game ignores, under empty part layers to paint on), keep its layer names (`back`, `leg_l`,
-`leg_r`, `torso`, `arm_l`, `arm_r`, `head`; `_l` is the left of the picture, and in the `side`
-group `arm_far`, `leg_far`, `back`, `torso`, `leg_near`, `arm_near`, `head`, where near is the side
+`leg_r`, `torso`, `head`, `arm_l`, `arm_r`; `_l` is the left of the picture, and in the `side`
+group `arm_far`, `leg_far`, `back`, `torso`, `leg_near`, `head`, `arm_near`, where near is the side
 towards the camera), paint over the mannequin on each part's layer, and save as `web/costumes/<name>.psd`, then add the name to
 `SKINS` in `web/rig.js`. A layer or group follows the part its name starts with ("arm_l glove"
 works), layers draw in the PSD's order, and hidden layers are skipped (except the `side` group

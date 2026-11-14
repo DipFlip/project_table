@@ -16,3 +16,5 @@
 - **Leave the face empty** in `head` to show the player's real face (like the astronaut's visor).
 - **Don't outline the end of an arm or leg** where it tucks under the body: it swings into view.
 - **Feet point out to the sides** in the front view, and forward in the side view.
+- **The ball** goes in the `ball` layer, inside the circle at the top right (shown by the guide).
+  It replaces the game's ball and spins as it rolls. Leave it empty to keep the normal ball.

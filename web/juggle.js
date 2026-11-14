@@ -5,6 +5,7 @@
 // right and snaps back as soon as you stop.
 import { add, sub, mul, dot, norm, perp, clamp, rgb, alpha, OneEuro, drawText } from "./common.js";
 import { palmPoints, matchPalms, PalmFix } from "./palms.js";
+import { drawBallArt } from "./rig.js";
 
 const GRAVITY = 1.25; // x screen height per s²
 const BALL_R = 0.038; // x screen height
@@ -630,14 +631,27 @@ export class Juggle {
           c.arc(q[0], q[1], r * (0.25 + 0.6 * k), 0, 2 * Math.PI);
           c.fill();
         });
-        c.fillStyle = "black";
-        c.beginPath();
-        c.arc(x, y, r + 3, 0, 2 * Math.PI);
-        c.fill();
-        c.fillStyle = rgb(col);
-        c.beginPath();
-        c.arc(x, y, r, 0, 2 * Math.PI);
-        c.fill();
+        const art = this.app.puppets?.ballArt(); // the costume's ball, ringed in this ball's colour
+        if (art) {
+          drawBallArt(c, art, x, y, r);
+          c.lineWidth = Math.max(4, r * 0.2);
+          c.strokeStyle = "black";
+          c.beginPath();
+          c.arc(x, y, r * 1.28, 0, 2 * Math.PI);
+          c.stroke();
+          c.lineWidth = Math.max(2.5, r * 0.13);
+          c.strokeStyle = rgb(col);
+          c.stroke();
+        } else {
+          c.fillStyle = "black";
+          c.beginPath();
+          c.arc(x, y, r + 3, 0, 2 * Math.PI);
+          c.fill();
+          c.fillStyle = rgb(col);
+          c.beginPath();
+          c.arc(x, y, r, 0, 2 * Math.PI);
+          c.fill();
+        }
         if (ball.bounced) { // hollow ring inside a ball that has used its ground bounce
           c.strokeStyle = "rgba(0,0,0,0.65)";
           c.lineWidth = Math.max(2.5, r * 0.14);

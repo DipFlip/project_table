@@ -1,8 +1,8 @@
 // Paints the costume PSDs in web/costumes/ (see web/costumes/README.md for drawing your own): a
 // blank mannequin template (in a reference group, under empty part layers) plus four costumes, each
-// with one layer per body part (back, leg_l, leg_r, torso, arm_l, arm_r, head) in the front rest
-// pose of web/rest.js (left half), a "side" group with the side view (right half: arm_far,
-// leg_far, back, torso, leg_near, arm_near, head) and a hidden "guide" layer showing the bones. Open template.psd in Photoshop, paint
+// with one layer per body part (back, leg_l, leg_r, torso, head, arm_l, arm_r, ball) in the front
+// rest pose of web/rest.js (left half), a "side" group with the side view (right half: arm_far,
+// leg_far, back, torso, leg_near, head, arm_near) and a hidden "guide" layer showing the bones. Open template.psd in Photoshop, paint
 // on the part layers, save as web/costumes/<name>.psd and add the name to COSTUMES in web/rig.js.
 //
 //   cd tools/costumes && npm install && node make.mjs
@@ -12,7 +12,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import agPsd from "ag-psd";
-import { SIZE, REST as J, BONES, REST_SIDE as K, SIDE_BONES } from "../../web/rest.js";
+import { SIZE, REST as J, BONES, REST_SIDE as K, SIDE_BONES, BALL } from "../../web/rest.js";
 
 const [W, H] = SIZE;
 const OUT = path.join(import.meta.dirname, "../../web/costumes");
@@ -241,6 +241,7 @@ function guide() {
     for (const p of Object.values(joints)) g.paint(circle(p, 8), { fill: hex("#38e0ff"), ink: 2, shade: false });
   }
   g.paint(ring(circle(J.head, 97), 3), { fill: hex("#38e0ff"), ink: 0, shade: false, alpha: 0.7 });
+  g.paint(ring(circle(BALL.at, BALL.r), 3), { fill: hex("#38e0ff"), ink: 0, shade: false, alpha: 0.9 }); // the ball's circle
   return g;
 }
 
@@ -630,6 +631,43 @@ const SIDE_ART = {
   },
 };
 
+// --- balls: painted inside BALL's circle, they replace the game's ball -----------------------------
+const B = BALL.at;
+const BALL_ART = {
+  template: (l) => l.paint(circle(B, 88), { fill: hex("#d9d3ca"), thick: 88 }),
+  // a lumpy space rock with craters
+  astronaut(l) {
+    const rock = (x, y) => mixc(hex("#8d8178"), hex("#5f554e"), smooth(0.3, 0.8, fbm(x / 26, y / 26)));
+    l.paint(shaggy(circle(B, 82), 9, 30), { fill: rock, thick: 80, gloss: 0.05 });
+    for (const [dx, dy, r] of [[-30, -26, 20], [28, 8, 14], [-6, 40, 11], [38, -36, 9], [-44, 22, 7]]) {
+      l.paint(circle(add(B, [dx, dy]), r), { fill: hex("#4e4540"), ink: 0, thick: r, shade: true });
+      l.paint(clip(ring(circle(add(B, [dx, dy]), r), 3), circle(add(B, [dx + r * 0.4, dy + r * 0.4]), r)), { fill: hex("#a89c92"), ink: 0, shade: false, alpha: 0.8 });
+    }
+  },
+  // a glowing full moon
+  werewolf(l) {
+    l.paint(circle(B, 98), { fill: hex("#fff3b0"), ink: 0, shade: false, alpha: 0.25 });
+    l.paint(circle(B, 84), { fill: (x, y) => mixc(hex("#fff6cf"), hex("#e8d790"), smooth(0.35, 0.75, fbm(x / 30, y / 30))), thick: 84, glow: 0.15 });
+    for (const [dx, dy, r] of [[-26, -20, 18], [24, 14, 22], [-10, 38, 10], [36, -34, 8]]) l.paint(circle(add(B, [dx, dy]), r), { fill: hex("#d9c57a"), ink: 0, thick: r, alpha: 0.7 });
+  },
+  // a gear with a glowing hub
+  robot(l) {
+    const teeth = Array.from({ length: 10 }, (_, i) => box(add(B, mul([Math.cos((i * Math.PI) / 5), Math.sin((i * Math.PI) / 5)], 72)), 14, 18, 5, (i * Math.PI) / 5));
+    l.paint(cut(blend(6, circle(B, 70), ...teeth), circle(B, 24)), { fill: hex("#b8c2cc"), thick: 60, gloss: 0.5 });
+    l.paint(ring(circle(B, 46), 6), { fill: hex("#8a96a4"), ink: 2.5, thick: 6 });
+    l.paint(ring(circle(B, 24), 8), { fill: hex("#4de1ff"), ink: 3, thick: 8, glow: 0.4 });
+  },
+  // the end of a round hay bale: straw rolled in a spiral, with loose wisps at the edge
+  farmer(l) {
+    const roll = (x, y) => {
+      const dx = x - B[0], dy = y - B[1], spiral = Math.sin(Math.hypot(dx, dy) / 6 - Math.atan2(dy, dx));
+      return mixc(hex("#e9c868"), hex("#b98d34"), smooth(0.2, 0.9, spiral * 0.5 + 0.5) * 0.6 + fbm(x / 5, y / 5) * 0.4);
+    };
+    l.paint(shaggy(circle(B, 86), 6, 4), { fill: roll, thick: 86 });
+    l.paint(ring(circle(B, 70), 7), { fill: hex("#c8423b"), ink: 2.5, thick: 6, alpha: 0.85 });
+  },
+};
+
 fs.mkdirSync(OUT, { recursive: true });
 const only = process.argv[2];
 for (const [name, make] of Object.entries({ template, astronaut, werewolf, robot, farmer })) {
@@ -641,5 +679,8 @@ for (const [name, make] of Object.entries({ template, astronaut, werewolf, robot
   const [legFar, legNear] = limbs.legs, [armFar, armNear] = limbs.arms;
   legFar.darken(0.8);
   armFar.darken(0.8);
-  writeCostume(name, [f.back, ...f.legs, f.torso, ...f.arms, f.head], [armFar, legFar, s.back, s.torso, legNear, armNear, s.head], name === "template");
+  const ball = new Layer("ball");
+  BALL_ART[name](ball);
+  // arms in front of the head (raised overhead or across the face); in the side view only the near arm
+  writeCostume(name, [f.back, ...f.legs, f.torso, f.head, ...f.arms, ball], [armFar, legFar, s.back, s.torso, legNear, s.head, armNear], name === "template");
 }
