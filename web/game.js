@@ -15,6 +15,7 @@ import { FLAGS, add, sub, mul, dot, norm, perp, clamp, rgb, rand, OneEuro, Sound
 import { Volleyball } from "./volley.js";
 import { Juggle, ColorJuggle } from "./juggle.js";
 import { HandFire } from "./handfire.js";
+import { Menu, ExitGesture } from "./menu.js";
 
 const BUNDLE = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.1/vision_bundle.mjs"; // keep tracker.js in step
 const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.1/wasm";
@@ -408,6 +409,18 @@ class HandPong {
 }
 
 // --- the games and what they track --------------------------------------------------
+// The body games and the menu share one tracking setup, so switching between them is instant:
+// whole bodies need the whole camera view, players stand back from a laptop (keep the pixels their
+// wrists have), up to six bodies, and the hand landmarker for up to four hands near the camera.
+const BODY = {
+  what: "body", zoom: 2, grab: 1280,
+  task: "pose", model: POSE_MODEL, hands: HAND_HELP && { ...HAND_HELP, options: { ...HAND_HELP.options, numHands: 4 } }, options: {
+    runningMode: "VIDEO", numPoses: 6,
+    // low presence/tracking thresholds keep a body through motion blur and partial views
+    minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.3, minTrackingConfidence: 0.3,
+  },
+};
+
 const GAMES = {
   pong: {
     Scene: HandPong, what: "hand", zoom: 0,
@@ -420,33 +433,10 @@ const GAMES = {
       minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.3, minTrackingConfidence: 0.3,
     },
   },
-  volley: {
-    Scene: Volleyball, what: "body", zoom: 2, // whole bodies need the whole camera view
-    grab: 1280, // players stand back from a laptop: keep the pixels their wrists have
-    // hands only help players close to the camera; each one tracked costs a landmark pass
-    task: "pose", model: POSE_MODEL, hands: HAND_HELP && { ...HAND_HELP, options: { ...HAND_HELP.options, numHands: 4 } }, options: {
-      runningMode: "VIDEO", numPoses: 6,
-      // low presence/tracking thresholds keep a body through motion blur and partial views
-      minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.3, minTrackingConfidence: 0.3,
-    },
-  },
-  juggle: {
-    Scene: Juggle, what: "body", zoom: 2,
-    grab: 1280,
-    // everyone in view plays (up to 4), each with their own platforms
-    task: "pose", model: POSE_MODEL, hands: HAND_HELP && { ...HAND_HELP, options: { ...HAND_HELP.options, numHands: 4 } }, options: {
-      runningMode: "VIDEO", numPoses: 4,
-      minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.3, minTrackingConfidence: 0.3,
-    },
-  },
-  color: {
-    Scene: ColorJuggle, what: "body", zoom: 2,
-    grab: 1280,
-    task: "pose", model: POSE_MODEL, hands: HAND_HELP && { ...HAND_HELP, options: { ...HAND_HELP.options, numHands: 4 } }, options: {
-      runningMode: "VIDEO", numPoses: 4,
-      minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.3, minTrackingConfidence: 0.3,
-    },
-  },
+  volley: { Scene: Volleyball, ...BODY },
+  juggle: { Scene: Juggle, ...BODY },
+  color: { Scene: ColorJuggle, ...BODY },
+  menu: { Scene: Menu, ...BODY },
 };
 
 // --- tracking -----------------------------------------------------------------------
@@ -612,6 +602,8 @@ class Stats {
 class CamApp {
   constructor(video, canvas, tracker, game) {
     Object.assign(this, { video, canvas, tracker, game });
+    this.gen = 0; // bumps on every game switch, so a frame from the last game's tracker is dropped
+    this.loading = null; // the game whose tracking is loading, from the menu
     this.ctx = canvas.getContext("2d");
     this.sound = new Sound();
     this.fx = new Particles();
@@ -622,7 +614,8 @@ class CamApp {
     this.debug = false;
     this.dim = 1;
     this.zoom = game.zoom;
-    this.puppets = game.task === "pose" ? new Costumes(FLAGS.skin) : null; // costumes on the players (rig.js), c cycles them
+    this.costumes = null; // costumes on the players (rig.js), c cycles them; made for the first body game
+    this.useGame(game);
     this.videoBox = "";
     this.now = performance.now() / 1000;
     this.stats = new Stats(this.now);
@@ -636,6 +629,34 @@ class CamApp {
     }
     this.resize();
     addEventListener("resize", () => this.resize());
+  }
+
+  // the parts that come with a game: its costumes, its way back to the menu
+  useGame(game) {
+    this.game = game;
+    this.zoom = game.zoom;
+    if (game.task === "pose" && !this.costumes) this.costumes = new Costumes(FLAGS.skin);
+    this.puppets = game.task === "pose" ? this.costumes : null;
+    this.exit = game.Scene === Menu ? null : new ExitGesture(game.task === "hand");
+  }
+
+  // switch to another game (or the menu) once its tracking is ready
+  select(key) {
+    const game = GAMES[key];
+    if (!game || this.loading) return;
+    this.loading = key;
+    getTracker(game).then((tracker) => {
+      this.loading = null;
+      this.tracker = tracker;
+      this.gen++;
+      this.busy = false;
+      this.frame = null;
+      this.useGame(game);
+      this.resize();
+    }).catch((e) => {
+      console.error(e);
+      this.loading = null;
+    });
   }
 
   resize() {
@@ -694,7 +715,9 @@ class CamApp {
     this.lastVideoTime = v.currentTime;
     const t = performance.now();
     this.busy = true;
+    const gen = this.gen;
     this.tracker.detect(v, t).then(({ found, hands, ms, grabMs }) => {
+      if (gen !== this.gen) return; // a frame for the game before a switch
       this.busy = false;
       this.stats.result(ms, grabMs, found.length, hands);
       // mirrored like the video
@@ -723,6 +746,10 @@ class CamApp {
     }
     this.scene.draw(c, now);
     this.fx.draw(c);
+    if (this.exit) {
+      if (this.exit.update(this.frame, (q) => this.toCourt(q), now)) this.select("menu");
+      this.exit.draw(c, now, this.H);
+    }
     c.restore();
     this.stats.tick(now, { particles: this.fx.p.length, sounds: this.sound.live, ball: !!this.scene.ball });
     // in the middle, by the centre line, out of the paddles' way
@@ -762,6 +789,8 @@ class CamApp {
       this.debug = !this.debug;
     } else if (k === "c") {
       this.puppets?.next(this.now);
+    } else if (k === "escape" || k === "m") {
+      this.select("menu");
     } else if (k === "f") {
       if (document.fullscreenElement) document.exitFullscreen();
       else document.documentElement.requestFullscreen?.();
@@ -769,7 +798,45 @@ class CamApp {
   }
 }
 
+// trackers by their setup, kept once made: switching back to a game is then instant
+const trackers = new Map();
+function getTracker(game) {
+  const key = JSON.stringify([game.task, game.model, game.options, game.hands, game.grab]);
+  if (!trackers.has(key)) {
+    const made = makeTracker(game);
+    made.catch(() => trackers.delete(key));
+    trackers.set(key, made);
+  }
+  return trackers.get(key);
+}
+
+async function makeTracker(game) {
+  // ?tracker=worker or ?tracker=page forces one, to compare them on a device
+  const force = new URLSearchParams(location.search).get("tracker");
+  let tracker = null;
+  if (force !== "page") {
+    try {
+      tracker = await WorkerTracker.create(game);
+    } catch (e) {
+      console.warn("tracking worker failed:", e);
+    }
+  }
+  if (force !== "worker" && (!tracker || (tracker.delegate === "CPU" && FLAGS.delegate !== "cpu"))) {
+    try { // the GPU on the page beats the CPU in the worker, even though it holds up drawing
+      const page = await PageTracker.create(game, tracker ? ["GPU"] : DELEGATES);
+      tracker?.close();
+      tracker = page;
+    } catch (e) {
+      if (!tracker) throw e;
+    }
+  }
+  if (!tracker) throw new Error("tracking failed to start");
+  return tracker;
+}
+
+let app = null;
 async function start(game) {
+  if (app) return app.select(Object.keys(GAMES).find((k) => GAMES[k] === game));
   const buttons = document.querySelectorAll("#start button"), err = document.getElementById("err");
   buttons.forEach((b) => (b.disabled = true));
   try {
@@ -780,29 +847,15 @@ async function start(game) {
     });
     await video.play();
     err.textContent = `Loading ${game.what} tracking…`;
-    // ?tracker=worker or ?tracker=page forces one, to compare them on a device
-    const force = new URLSearchParams(location.search).get("tracker");
-    let tracker = null;
-    if (force !== "page") {
-      try {
-        tracker = await WorkerTracker.create(game);
-      } catch (e) {
-        console.warn("tracking worker failed:", e);
-      }
-    }
-    if (force !== "worker" && (!tracker || (tracker.delegate === "CPU" && FLAGS.delegate !== "cpu"))) {
-      try { // the GPU on the page beats the CPU in the worker, even though it holds up drawing
-        const page = await PageTracker.create(game, tracker ? ["GPU"] : DELEGATES);
-        tracker?.close();
-        tracker = page;
-      } catch (e) {
-        if (!tracker) throw e;
-      }
-    }
-    if (!tracker) throw new Error("tracking failed to start");
+    const tracker = await getTracker(game);
+    if (app) return; // started meanwhile from the other path
     document.getElementById("start").remove();
-    const app = new CamApp(video, document.getElementById("canvas"), tracker, game);
+    app = new CamApp(video, document.getElementById("canvas"), tracker, game);
     addEventListener("keydown", (e) => app.key(e));
+    // sound needs a click or key in a browser started normally (see the README for a kiosk browser)
+    const wake = () => app.sound.ctx.state === "suspended" && app.sound.ctx.resume();
+    addEventListener("pointerdown", wake);
+    addEventListener("keydown", wake);
     const report = document.getElementById("report");
     report.querySelector(".close").onclick = () => (report.hidden = true);
     report.querySelector(".copy").onclick = async (e) => {
@@ -837,3 +890,6 @@ async function start(game) {
 }
 
 for (const b of document.querySelectorAll("#start button[data-game]")) b.addEventListener("click", () => start(GAMES[b.dataset.game]));
+// no mouse or keyboard at a demo: go straight to the camera menu (the buttons above stay as a fallback
+// while the camera is asked for or if it's refused); ?menu=0 waits for a click instead
+if (FLAGS.menu !== "0") start(GAMES.menu);

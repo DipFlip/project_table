@@ -71,8 +71,23 @@ On macOS the terminal needs camera access (System Settings > Privacy & Security 
 
 ### In the browser
 `web/` is the same game as a static page (JS port of `hand_pong.py`, MediaPipe Tasks
-Vision running in the page, nothing uploaded), plus full-body Volleyball, Juggling and Colour Juggle;
-the start page picks one. Live at https://finger-gun-pong.vercel.app.
+Vision running in the page, nothing uploaded), plus full-body Volleyball, Juggling and Colour Juggle,
+together called Ballistic. Live at https://finger-gun-pong.vercel.app.
+
+No mouse or keyboard needed: the page opens the camera straight into a menu (`web/menu.js`)
+where a cursor follows each hand, and hovering one over a game for 1.5 s starts it. Back to the
+menu: both arms up in an O above the head for 3 s in the body games, an OK sign for 2 s in
+Finger Pong (fingers only read up close), or nobody in view for 30 s. A ring shows the hold.
+The keys still work (m or Esc for the menu); `?menu=0` shows the clickable start page instead.
+The body games and the menu share one tracker, so switching between them is instant.
+
+For a demo machine, start Chrome so the camera and sound need no click (quit Chrome first, or
+use a separate profile with `--user-data-dir`):
+
+    open -a "Google Chrome" --args --kiosk --autoplay-policy=no-user-gesture-required \
+      --use-fake-ui-for-media-stream http://localhost:8517
+
+The local server sends no cache headers, so after changing the code hard-reload (Cmd+Shift+R).
 
 Volleyball (`web/volley.js`) is made for a projector with the laptop camera watching the
 players: side view, gravity, a net and bouncy back walls, any number of players per side

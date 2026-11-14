@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Camera Games</title>
+<title>Ballistic</title>
 <style>
   html, body { margin: 0; height: 100%; background: #000; color: #eee; overflow: hidden;
                font-family: system-ui, -apple-system, sans-serif; }
@@ -39,7 +39,7 @@
 <video id="video" playsinline muted></video>
 <canvas id="canvas"></canvas>
 <div id="start">
-  <h1>Camera Games</h1>
+  <h1>Ballistic</h1>
   <div class="games">
     <button class="pong" data-game="pong"><b>Finger Pong</b>
       <span>Two players in front of a phone or laptop camera. Your paddle is the line between your thumb
@@ -51,16 +51,16 @@
         Any number per side; bop the ball up and over the net, a point when it lands on the other side.
         First to 11.</span></button>
     <button class="juggle" data-game="juggle"><b>Juggling</b>
-      <span>One player, full body. Four coloured platforms on your hands and feet aim towards the opposite hand,
-        and moving sideways shifts that angle left or right. Each ball gets one floor bounce; starts with one
-        ball and adds more until the last ball is lost.</span></button>
+      <span>Full body, everyone in view plays. Four coloured platforms on your hands and feet aim towards the
+        opposite hand, and moving sideways shifts that angle left or right. Each ball gets one floor bounce;
+        starts with one ball and adds more until the last ball is lost.</span></button>
     <button class="color" data-game="color"><b>Colour Juggle</b>
-      <span>One player, one ball. Each hand and foot has its own colour, and the ball changes colour to show
-        which platform must bounce it next. Touching it with the wrong limb (or missing after one floor bounce)
-        is game over!</span></button>
+      <span>One ball, everyone in view plays. Each hand and foot has its own colour, and the ball changes colour
+        to show which platform must bounce it next; it goes through the others. Three hearts: every floor
+        bounce costs one.</span></button>
   </div>
   <div id="err"></div>
-  <p class="keys">Keys: r new match · v video brightness · z camera zoom · c costume (body games) · h fire hands (Finger Pong) · d skeletons (or double-tap) · f fullscreen</p>
+  <p class="keys">Keys: r new match · v video brightness · z camera zoom · c costume (body games) · h fire hands (Finger Pong) · d skeletons (or double-tap) · f fullscreen · m or Esc menu</p>
 </div>
 <div id="report" hidden>
   <textarea readonly></textarea>
