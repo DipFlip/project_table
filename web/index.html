@@ -4,20 +4,39 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ballistic</title>
+<link rel="preload" href="fonts/the-bomb-sound/The%20Bomb%20Sound.ttf" as="font" type="font/ttf" crossorigin>
 <style>
+  @font-face {
+    font-family: "The Bomb Sound";
+    src: url("fonts/the-bomb-sound/The%20Bomb%20Sound.otf") format("opentype"),
+         url("fonts/the-bomb-sound/The%20Bomb%20Sound.ttf") format("truetype");
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+  }
+  @font-face {
+    font-family: "The Bomb Sound";
+    src: url("fonts/the-bomb-sound/The%20Bomb%20Sound%20Italic.otf") format("opentype"),
+         url("fonts/the-bomb-sound/The%20Bomb%20Sound%20Italic.ttf") format("truetype");
+    font-weight: 100 900;
+    font-style: italic;
+    font-display: swap;
+  }
   html, body { margin: 0; height: 100%; background: #000; color: #eee; overflow: hidden;
-               font-family: system-ui, -apple-system, sans-serif; }
+               font-family: "The Bomb Sound", system-ui, -apple-system, sans-serif; letter-spacing: 0.03em; }
   canvas { position: fixed; left: 0; top: 0; display: block; } /* sized in px by game.js, like the video */
   video { position: fixed; left: 0; top: 0; width: 0; height: 0; transform: scaleX(-1); object-fit: fill; }
   #start { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center;
            justify-content: center; gap: 18px; text-align: center; padding: 16px; background: #111; overflow-y: auto; }
-  #start h1 { margin: 0; font-size: clamp(32px, 7vw, 72px); }
+  #start h1 { margin: 0; font-size: clamp(44px, 8.5vw, 92px); font-weight: normal; color: #fff;
+              letter-spacing: 0.04em; paint-order: stroke fill;
+              -webkit-text-stroke: clamp(6px, 1vw, 12px) #000; text-shadow: 0 5px 0 #000; }
   #start p { margin: 0; max-width: 640px; line-height: 1.5; color: #bbb; }
   #start .games { display: flex; flex-wrap: wrap; justify-content: center; gap: 16px; max-width: 920px; }
   #start button { flex: 1 1 320px; max-width: 440px; display: flex; flex-direction: column; gap: 8px; text-align: left;
-                  font: inherit; padding: 18px 20px; border-radius: 12px; border: 0; color: #111; cursor: pointer; }
-  #start button b { font-size: 24px; }
-  #start button span { font-size: 15px; line-height: 1.45; }
+                  font: inherit; padding: 18px 20px; border-radius: 12px; border: 3px solid #000; color: #111; cursor: pointer; }
+  #start button b { font-size: 26px; font-weight: normal; }
+  #start button span { font-size: 15px; line-height: 1.5; }
   #start .pong { background: #46dc78; }
   #start .volley { background: #ff9632; }
   #start .juggle { background: #ffd23c; }
@@ -60,7 +79,7 @@
         bounce costs one.</span></button>
   </div>
   <div id="err"></div>
-  <p class="keys">Keys: r new match · v video brightness · z camera zoom · c costume (body games) · h fire hands (Finger Pong) · d skeletons (or double-tap) · f fullscreen · m or Esc menu</p>
+  <p class="keys">Keys: r new match - v video brightness - z camera zoom - c costume (body games) - h fire hands (Finger Pong) - d skeletons (or double-tap) - f fullscreen - m or Esc menu</p>
 </div>
 <div id="report" hidden>
   <textarea readonly></textarea>

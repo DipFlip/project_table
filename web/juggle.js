@@ -3,8 +3,9 @@
 // distinct colours on both hands and both feet. Each hand aims bounces towards the other hand (and
 // each foot towards the opposite / furthest hand), while moving sideways shifts that angle left or
 // right and snaps back as soon as you stop.
-import { add, sub, mul, dot, norm, perp, clamp, rgb, alpha, OneEuro, drawText } from "./common.js";
+import { add, sub, mul, dot, norm, perp, clamp, rgb, OneEuro, drawText } from "./common.js";
 import { palmPoints, matchPalms, PalmFix } from "./palms.js";
+import { BodyGuide } from "./framing.js";
 import { drawBallArt } from "./rig.js";
 
 const GRAVITY = 1.25; // x screen height per s²
@@ -21,13 +22,14 @@ const PAD_W = 0.18; // platform width, x screen height
 const MAX_BASE_TILT = 0.40; // max inward base tilt towards the target hand (~23°)
 const MAX_MOVE_TILT = 0.48; // max extra tilt left/right from sideways movement (~27.5°)
 const MAX_TOTAL_TILT = 0.78; // overall visual platform tilt cap (~45°)
-const TILT_DEAD = 0.06; // sideways deadband (x screen height per s) before movement shifts the angle
+const TILT_DEAD = 0.085; // sideways deadband (x screen height per s) before movement shifts the angle
 const TILT_SPAN = 0.34; // sideways speed above TILT_DEAD to reach MAX_MOVE_TILT
-const TILT_IN_RATE = 26; // smoothing rate (1/s) when tilting into motion
+const BASE_TILT_RATE = 14; // calm smoothing rate (1/s) for the passive aim towards the target hand
+const TILT_IN_RATE = 24; // smoothing rate (1/s) when tilting into motion
 const TILT_OUT_RATE = 65; // fast snap-back rate (1/s) when a hand or foot stops moving
-const INACTIVE_SCALE = 0.2; // off-colour platforms in Colour Juggle shrink to 1/5 length
-const SCALE_OMEGA = 26; // natural frequency (rad/s) of the size spring (~0.35 s settle)
-const SCALE_ZETA = 0.44; // underdamped ratio for a slight wobbly overshoot (~20%)
+const INACTIVE_SCALE = 0.25; // off-colour platforms in Colour Juggle shrink to 1/4 length
+const SCALE_OMEGA = 24; // natural frequency (rad/s) of the size spring
+const SCALE_ZETA = 0.78; // well-damped ratio so shrunk platforms snap cleanly without wobbling
 const HIT_COOLDOWN_S = 0.2; // a platform can't re-hit the same ball this soon
 const MAX_BALLS = 6;
 const SEEN = 0.5; // landmark visibility that counts a head, shoulder, hip, elbow or knee as in view
@@ -44,19 +46,17 @@ const JUMP = 0.3; // a limb jumping further than this (x screen width) restarts 
 const SERVE_S = 1.5; // countdown before the first ball
 const OVER_S = 2.8; // pause after game over before starting a new round
 
-// MediaPipe pose landmarks
+// MediaPipe pose landmarks (matching volley.js: wrists and ankles directly, without noisy pose finger/toe tips)
 const NOSE = 0;
 const L_SHOULDER = 11, R_SHOULDER = 12, L_ELBOW = 13, R_ELBOW = 14, L_WRIST = 15, R_WRIST = 16;
-const L_PINKY = 17, R_PINKY = 18, L_INDEX = 19, R_INDEX = 20;
 const L_HIP = 23, R_HIP = 24, L_KNEE = 25, R_KNEE = 26, L_ANKLE = 27, R_ANKLE = 28;
-const L_HEEL = 29, R_HEEL = 30, L_TOE = 31, R_TOE = 32;
 
-// [root, mid, end, tipA, tipB, isFoot]
+// [root, mid, end, isFoot]
 const LIMBS = [
-  [L_SHOULDER, L_ELBOW, L_WRIST, L_INDEX, L_PINKY, false],
-  [R_SHOULDER, R_ELBOW, R_WRIST, R_INDEX, R_PINKY, false],
-  [L_HIP, L_KNEE, L_ANKLE, L_TOE, L_HEEL, true],
-  [R_HIP, R_KNEE, R_ANKLE, R_TOE, R_HEEL, true],
+  [L_SHOULDER, L_ELBOW, L_WRIST, false],
+  [R_SHOULDER, R_ELBOW, R_WRIST, false],
+  [L_HIP, L_KNEE, L_ANKLE, true],
+  [R_HIP, R_KNEE, R_ANKLE, true],
 ];
 // Four distinct limb colours: left hand green, right hand orange, left foot sky blue, right foot pink
 export const LIMB_COLORS = [
@@ -100,18 +100,18 @@ class LimbPad {
     this.reset();
   }
   reset() {
-    this.filter = new OneEuro(1.6, 0.03, 3.0); // higher cutoff + beta so platform motion tracks tightly
+    // steadied to match Volleyball (volley.js): ankles have no hand-landmarker help so filter slightly firmer
+    this.filter = new OneEuro(this.foot ? 0.7 : 0.85, this.foot ? 0.008 : 0.009, 2.8);
     this.raw = null;
-    this.prevRaw = null;
     this.rawAt = -1e9;
     this.inView = false;
     this.direct = false;
     this.pos = null; // smoothed [x, y] in screen px
-    this.vel = [0, 0]; // px/s from raw landmark motion so stopping registers immediately
+    this.vel = [0, 0]; // px/s from the One Euro derivative, like Volleyball and Finger Pong
     this.baseTilt = 0; // inward tilt towards the target hand
     this.moveTilt = 0; // offset left/right from sideways movement
     this.tilt = 0; // total visual platform tilt (radians)
-    this.scale = null; // platform size multiplier (1 = full, 0.2 = shrunk in Colour Juggle)
+    this.scale = null; // platform size multiplier (1 = full, 0.25 = shrunk in Colour Juggle)
     this.scaleVel = 0;
     this.t = null;
     this.seen = -1e9;
@@ -132,12 +132,13 @@ export class Juggle {
     this.thick = Math.max(6, Math.round(H * 0.014));
     this.floorY = H - 6;
     // limb i belongs to player slot i / 4 and is limb kind i % 4 (left hand, right hand, left foot, right foot)
-    this.limbs = Array.from({ length: MAX_PLAYERS * 4 }, (_, i) => new LimbPad(LIMBS[i % 4][5]));
+    this.limbs = Array.from({ length: MAX_PLAYERS * 4 }, (_, i) => new LimbPad(LIMBS[i % 4][3]));
     this.slots = Array.from({ length: MAX_PLAYERS }, () => ({ at: null, seen: -1e9 })); // each player's head/shoulders
     this.at = null; // the first player's head/shoulders, to aim new balls
     this.frameN = -1;
     this.modeKey = "juggle";
     this.hudColor = GOLD;
+    this.guide = new BodyGuide("juggle", { needFeet: true, limbColors: LIMB_COLORS });
     this.newMatch(app.now);
   }
 
@@ -167,7 +168,7 @@ export class Juggle {
     return w.length ? mul(w.reduce((s, i) => add(s, pts[i]), [0, 0]), 1 / w.length) : null;
   }
 
-  limbPoint(h, pts, root, mid, end, tipA, tipB, foot) {
+  limbPoint(h, pts, root, mid, end, foot) {
     const W = this.W, H = this.H, ok = (j) => pts[j][2] >= SEEN;
     const p = pts[end], m = 10;
     const inBounds = p[0] >= m && p[0] <= W - m && p[1] >= m && p[1] <= H - m;
@@ -178,15 +179,7 @@ export class Juggle {
     }
     const [visIn, visOut] = foot ? [FOOT_IN, FOOT_OUT] : [HAND_IN, HAND_OUT];
     h.inView = p[2] >= (h.inView ? visOut : visIn);
-    if (h.inView) {
-      let at = p.slice(0, 2);
-      if (pts[tipA][2] >= visOut && pts[tipB][2] >= visOut) {
-        const tip = mul(add(pts[tipA], pts[tipB]), 0.5);
-        if (norm(sub(tip, at)) <= 0.18 * H) at = mul(add(at, tip), 0.5);
-      }
-      if (foot && (at[0] < m || at[0] > W - m || at[1] < m || at[1] > H - m)) return { offScreen: true };
-      return { at, direct: true };
-    }
+    if (h.inView) return { at: p.slice(0, 2), direct: true };
     if (!foot && ok(mid) && ok(root)) {
       const upper = sub(pts[mid], pts[root]);
       const guess = norm(sub(p, pts[mid])) <= 1.4 * norm(upper) ? p : add(pts[mid], mul(upper, EXTEND));
@@ -291,7 +284,7 @@ export class Juggle {
       const excess = Math.max(0, vx - TILT_DEAD) * moveAngleFactor;
       const wantMove = Math.sign(h.vel[0]) * Math.min(MAX_MOVE_TILT, (excess / TILT_SPAN) * MAX_MOVE_TILT);
       const releasing = Math.abs(wantMove) < Math.abs(h.moveTilt) || wantMove * h.moveTilt < 0;
-      const kBase = dt > 0 ? 1 - Math.exp(-dt * TILT_IN_RATE) : 1;
+      const kBase = dt > 0 ? 1 - Math.exp(-dt * BASE_TILT_RATE) : 1;
       const kMove = dt > 0 ? 1 - Math.exp(-dt * (releasing ? TILT_OUT_RATE : TILT_IN_RATE)) : 1;
       h.baseTilt += (wantBase - h.baseTilt) * kBase;
       h.moveTilt += (wantMove - h.moveTilt) * kMove;
@@ -303,9 +296,9 @@ export class Juggle {
   // one player's four limbs (limbs base .. base + 3) from their body's landmarks
   trackLimbs(pts, base, palms, t, dts) {
     const W = this.W;
-    LIMBS.forEach(([root, mid, end, tipA, tipB, foot], k) => {
+    LIMBS.forEach(([root, mid, end, foot], k) => {
       const i = base + k, h = this.limbs[i], palm = palms.get(i);
-      let found = this.limbPoint(h, pts, root, mid, end, tipA, tipB, foot);
+      let found = this.limbPoint(h, pts, root, mid, end, foot);
       if (!foot) {
         const pose = found && !found.offScreen ? found : null;
         const at = h.palm.apply(pose && pose.at, palm, t);
@@ -316,7 +309,6 @@ export class Juggle {
         h.reset();
         return;
       }
-      const prevRaw = h.raw;
       if (found) {
         // keep visible feet just above the floor trigger so low foot saves catch before the floor
         h.raw = foot ? [found.at[0], Math.min(found.at[1], this.floorY - 4)] : found.at;
@@ -335,19 +327,9 @@ export class Juggle {
       const dt = h.t !== null ? t - h.t : 0;
       dts[i] = dt;
       const x = h.filter.filter(h.raw, dt);
+      const d = h.filter.dx;
       h.pos = [x[0], x[1]];
-      if (found && prevRaw && dt > 0) {
-        // velocity from raw landmarks (lightly smoothed) so stopping drops to zero on the very next frame
-        const av = alpha(14.0, dt);
-        h.vel = [
-          h.vel[0] + av * ((h.raw[0] - prevRaw[0]) / dt - h.vel[0]),
-          h.vel[1] + av * ((h.raw[1] - prevRaw[1]) / dt - h.vel[1]),
-        ];
-      } else if (!found && dt > 0) {
-        h.vel = mul(h.vel, Math.exp(-dt * 25));
-      } else {
-        h.vel = [0, 0];
-      }
+      h.vel = found ? [d[0], d[1]] : dt > 0 ? mul(h.vel, Math.exp(-dt * 25)) : [0, 0];
       h.t = t;
       if (found) h.seen = t;
     });
@@ -520,6 +502,7 @@ export class Juggle {
 
   update(dt, now) {
     this.track();
+    this.guide.update(dt, this.app.frame, (q) => this.app.toCourt(q), this.W, this.H);
     this.stepScales(dt);
     const pads = this.limbs.map((_, i) => this.paddle(i));
     if (this.endedAt !== null) {
@@ -609,6 +592,10 @@ export class Juggle {
     if (this.best > 0) drawText(c, H * 0.038, `best ${this.best}`, [W - Math.max(90, W * 0.1), H * 0.07], [225, 225, 225]);
     if (this.banner && now - this.banner[2] < 1.2) {
       drawText(c, small, this.banner[0], [W / 2, H * 0.2], this.banner[1]);
+    }
+
+    if (this.endedAt === null) {
+      this.guide.draw(c, { W, H, floorY: this.floorY, empty: !this.balls.length && !this.ready(), inPlay: this.balls.length > 0 });
     }
 
     const frame = this.app.frame;
@@ -702,14 +689,14 @@ export class Juggle {
       }
     }
 
-    if (!this.balls.length && this.endedAt === null) {
-      const msg = this.ready() ? `serve in ${Math.round(Math.max(0, this.serveAt - now))}` : "step in front of the camera";
-      drawText(c, small, msg, [W / 2, H * 0.4], [255, 255, 255]);
+    if (!this.balls.length && this.endedAt === null && this.ready()) {
+      const y = this.guide.slots[0].fade > 0.05 ? H * 0.2 : H * 0.4;
+      drawText(c, small, `serve in ${Math.round(Math.max(0, this.serveAt - now))}`, [W / 2, y], [255, 255, 255]);
     }
     if (this.endedAt !== null) {
       if (this.overReason) {
         drawText(c, big * 0.8, "game over!", [W / 2, H * 0.36], [255, 110, 110]);
-        const subMsg = this.newRecord ? `${this.overReason} · new best: ${this.score}!` : `${this.overReason} · score: ${this.score}`;
+        const subMsg = this.newRecord ? `${this.overReason} - new best: ${this.score}!` : `${this.overReason} - score: ${this.score}`;
         drawText(c, small * 0.95, subMsg, [W / 2, H * 0.47], this.newRecord ? GOLD : [235, 235, 235]);
       } else {
         const msg = this.newRecord ? `new best: ${this.score}!` : `score: ${this.score}`;

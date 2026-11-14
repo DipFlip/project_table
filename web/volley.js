@@ -6,6 +6,7 @@
 // the top edge shows where it is) and has no bounce limit; when it lands, the other side scores.
 import { add, sub, mul, dot, norm, perp, clamp, rgb, OneEuro, drawText } from "./common.js";
 import { palmPoints, matchPalms, PalmFix } from "./palms.js";
+import { BodyGuide } from "./framing.js";
 import { drawBallArt } from "./rig.js";
 
 const WIN_SCORE = 11;
@@ -76,6 +77,7 @@ export class Volleyball {
     this.netTop = this.floorY - NET_H * H;
     this.athletes = [];
     this.frameN = -1;
+    this.guide = new BodyGuide("volley", { splitSides: true });
     this.newMatch(app.now);
   }
 
@@ -264,6 +266,7 @@ export class Volleyball {
 
   update(dt, now) {
     this.track();
+    this.guide.update(dt, this.app.frame, (q) => this.app.toCourt(q), this.W, this.H);
     const pads = new Map(this.athletes.map((a) => [a, this.paddle(a)]));
     if (this.winner !== null) {
       if (now - this.winnerAt > 6) this.newMatch(now);
@@ -329,6 +332,13 @@ export class Volleyball {
       c.stroke();
     }
     TEAMS.forEach((t, i) => drawText(c, big, String(this.score[i]), [this.netX + (i ? 1 : -1) * W * 0.08, H * 0.1], t.color));
+
+    if (this.winner === null) {
+      this.guide.draw(c, {
+        W, H, floorY: this.floorY, empty: !this.ball && !this.athletes.length,
+        inPlay: !!this.ball, sideColors: TEAMS.map((t) => t.color),
+      });
+    }
 
     const frame = this.app.frame;
     if (frame && this.app.debug) {
@@ -400,9 +410,8 @@ export class Volleyball {
           c.fill();
         }
       }
-    } else if (this.winner === null) {
-      const msg = this.athletes.length ? `serve in ${Math.round(Math.max(0, this.serveAt - now))}` : "step in front of the camera";
-      drawText(c, small, msg, [W / 2, H * 0.4], [255, 255, 255]);
+    } else if (this.winner === null && this.athletes.length) {
+      drawText(c, small, `serve in ${Math.round(Math.max(0, this.serveAt - now))}`, [W / 2, H * 0.4], [255, 255, 255]);
     }
     if (this.winner !== null) {
       const w = TEAMS[this.winner];

@@ -150,16 +150,30 @@ export class Particles {
   clear() { this.p = []; }
 }
 
-// --- bold text with a drop shadow, centred on (x, y), turned by `angle` -------------------
-export function drawText(c, size, msg, [x, y], color, angle = 0) {
+// --- game text with a drop shadow (and optional black border), centred on (x, y) ---------
+export const FONT = '"The Bomb Sound", system-ui, -apple-system, sans-serif';
+if (typeof document !== "undefined") document.fonts?.load('24px "The Bomb Sound"');
+
+export function drawText(c, size, msg, [x, y], color, angle = 0, border = 0) {
   c.save();
   c.translate(x, y);
   if (angle) c.rotate(angle);
-  c.font = `bold ${Math.round(size)}px system-ui, -apple-system, sans-serif`;
+  c.font = `${Math.round(size)}px ${FONT}`;
   c.textAlign = "center";
   c.textBaseline = "middle";
-  c.fillStyle = "rgba(0,0,0,0.85)";
-  c.fillText(msg, 3, 3);
+  c.lineJoin = "round";
+  c.miterLimit = 2;
+  if (border > 0) {
+    const off = Math.max(3, Math.round(border * 0.35));
+    c.strokeStyle = "rgba(0,0,0,0.85)";
+    c.lineWidth = border;
+    c.strokeText(msg, off, off);
+    c.strokeStyle = "#000";
+    c.strokeText(msg, 0, 0);
+  } else {
+    c.fillStyle = "rgba(0,0,0,0.85)";
+    c.fillText(msg, 3, 3);
+  }
   c.fillStyle = rgb(color);
   c.fillText(msg, 0, 0);
   c.restore();

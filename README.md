@@ -76,7 +76,7 @@ together called Ballistic. Live at https://finger-gun-pong.vercel.app.
 
 No mouse or keyboard needed: the page opens the camera straight into a menu (`web/menu.js`)
 where a cursor follows each hand, and hovering one over a game for 1.5 s starts it. Back to the
-menu: both arms up in an O above the head for 3 s in the body games, an OK sign for 2 s in
+menu: both arms up in an O above the head for 3 s in the body games, an OK sign for 4 s in
 Finger Pong (fingers only read up close), or nobody in view for 30 s. A ring shows the hold.
 The keys still work (m or Esc for the menu); `?menu=0` shows the clickable start page instead.
 The body games and the menu share one tracker, so switching between them is instant.
@@ -108,7 +108,7 @@ the pose wrist up close (`?hands=0` turns it off; the `?debug=1` panel counts pa
 Volleyball does the same, matching up to four hands across all players.
 
 The body games can put costumes on the players: the c key cycles astronaut, werewolf, robot,
-farmer and mix (a different one each); `?skin=astronaut` starts with one. To draw a new one, see
+farmer, birdperson, freakshow and mix (a different one each); `?skin=astronaut` starts with one. To draw a new one, see
 `web/costumes/README.md`.
 Each costume is a layered PSD in `web/costumes/` painted over one blank template
 (`web/costumes/template.psd`, 2048 x 1536, joints in `web/rest.js`): a front view on the left half
@@ -119,8 +119,9 @@ than about 60° from the camera (shoulders narrow next to the torso) the costume
 side view, mirrored for a player facing left, and back once they turn under about 45°.
 
 To make a costume in Photoshop: copy `template.psd` (the mannequin is in a `template` group the
-game ignores, under empty part layers to paint on), keep its layer names (`back`, `leg_l`,
-`leg_r`, `torso`, `head`, `arm_l`, `arm_r`; `_l` is the left of the picture, and in the `side`
+game ignores, under empty part layers to paint on; painting directly over `template-front.png` at
+450 x 768 also works), keep its layer names (`back`, `leg_l`,
+`leg_r`, `torso` or legless/robed `body`, `head` or `hat`, `arm_l`, `arm_r`; `_l` is the left of the picture, and in the `side`
 group `arm_far`, `leg_far`, `back`, `torso`, `leg_near`, `head`, `arm_near`, where near is the side
 towards the camera), paint over the mannequin on each part's layer, and save as `web/costumes/<name>.psd`, then add the name to
 `SKINS` in `web/rig.js`. A layer or group follows the part its name starts with ("arm_l glove"

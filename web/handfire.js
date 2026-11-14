@@ -28,9 +28,12 @@ const RAMP_HITS = 10; // paddle hits in a rally to reach full fire; each new bal
 export class HandFire {
   static on = FLAGS.fx !== "nofire" && FLAGS.fx !== "0";
 
-  // 0 (a new ball, no fire) .. 1 (full fire), from the rally's paddle hits
-  get heat() {
+  // 0 (a new ball, no fire) .. 1 (full fire at RAMP_HITS), eased so early bounces stay subtle
+  get step() {
     return HandFire.on ? clamp((this.app.scene?.rally ?? 0) / RAMP_HITS, 0, 1) : 0;
+  }
+  get heat() {
+    return this.step ** 1.7;
   }
 
   constructor(app) {
@@ -125,20 +128,22 @@ export class HandFire {
   dir(v) { return this.app.turned ? [-v[1], v[0]] : v; }
 
   spawn(x, y, vx, vy, size, life, color, spark = false) {
-    if (this.flames.length < MAX_FLAMES) this.flames.push({ x, y, vx, vy, size, life, color, spark, age: 0 });
+    if (this.flames.length < MAX_FLAMES) {
+      this.flames.push({ x, y, vx, vy, size, life, color, spark, a: 0.4 + 0.6 * this.step, h: this.heat, age: 0 });
+    }
   }
 
   // flames thrown out around `at` (screen px) along `d` (unit, screen) with `spread` radians each way
   blast(at, d, spread, r, color, { flames = 0, sparks = 0, smoke = 0, speed = 1 }) {
-    const k = this.heat;
+    const k = this.heat, s = this.step;
     [flames, sparks, smoke] = [Math.round(flames * k), Math.round(sparks * k), Math.round(smoke * k)];
     const a0 = Math.atan2(d[1], d[0]);
     for (let i = 0; i < flames + sparks; i++) {
       const spark = i >= flames, a = a0 + (Math.random() * 2 - 1) * spread;
-      const sp = r * speed * (spark ? 18 + Math.random() * 30 : 4 + Math.random() * 10);
+      const sp = r * speed * (spark ? 18 + Math.random() * 30 : (4 + Math.random() * 10) * (0.5 + 0.5 * s));
       this.spawn(at[0], at[1], Math.cos(a) * sp, Math.sin(a) * sp,
-        spark ? r * (0.35 + Math.random() * 0.3) : r * (1.6 + Math.random() * 1.6),
-        spark ? 0.3 + Math.random() * 0.4 : 0.35 + Math.random() * 0.35, color, spark);
+        spark ? r * (0.35 + Math.random() * 0.3) * (0.6 + 0.4 * s) : r * (1.6 + Math.random() * 1.6) * (0.4 + 0.6 * s),
+        (spark ? 0.3 + Math.random() * 0.4 : 0.35 + Math.random() * 0.35) * (0.55 + 0.45 * s), color, spark);
     }
     for (let i = 0; i < smoke && this.smoke.length < MAX_SMOKE; i++) {
       const a = a0 + (Math.random() * 2 - 1) * spread, sp = r * (1 + Math.random() * 3);
@@ -207,9 +212,9 @@ export class HandFire {
     const r = scene.r, b = this.pt(scene.ball), v = this.dir(scene.vel);
     const color = scene.flash ? scene.players[scene.flash[0]].color : BALL_FIRE;
     c.globalCompositeOperation = "lighter";
-    const k = this.heat;
+    const k = this.heat, st = this.step;
     c.globalAlpha = 0.6 * k;
-    const gs = r * (4 + 4 * k);
+    const gs = r * (2.5 + 5.5 * st);
     c.drawImage(this.sprite(color, false), b[0] - gs / 2, b[1] - gs / 2, gs, gs);
     c.globalAlpha = 1;
     c.globalCompositeOperation = "source-over";
@@ -219,13 +224,13 @@ export class HandFire {
       n -= 1;
       const a = Math.random() * 2 * Math.PI, d = Math.random() * r * 0.8;
       this.spawn(b[0] + Math.cos(a) * d, b[1] + Math.sin(a) * d,
-        -v[0] * 0.1 + (Math.random() - 0.5) * r * 3, -v[1] * 0.1 - r * (2 + Math.random() * 3),
-        r * (2 + Math.random() * 1.4), 0.25 + Math.random() * 0.25, color);
+        -v[0] * 0.1 + (Math.random() - 0.5) * r * 3, -v[1] * 0.1 - r * (2 + Math.random() * 3) * (0.4 + 0.6 * st),
+        r * (2 + Math.random() * 1.4) * (0.35 + 0.65 * st), (0.25 + Math.random() * 0.25) * (0.55 + 0.45 * st), color);
     }
   }
 
   hand(c, p, color, flash, dt, v) {
-    const app = this.app, video = app.video, k = this.heat;
+    const app = this.app, video = app.video, k = this.heat, st = this.step;
     const L = Math.hypot(p[9][0] - p[0][0], p[9][1] - p[0][1]); // wrist to middle knuckle, px
     if (L < 8) return;
     // the hand's box on screen, padded for the mask's width and blur
@@ -263,7 +268,7 @@ export class HandFire {
       g.setTransform(1, 0, 0, 1, 0, 0);
       // tint: the player's colour with the camera's light and shade, lifted a little
       g.globalCompositeOperation = "color";
-      g.globalAlpha = 0.7 * k; // some of the skin's own colour shows through
+      g.globalAlpha = 0.7 * st; // some of the skin's own colour shows through
       g.fillStyle = `rgb(${color})`;
       g.fillRect(0, 0, cw, ch);
       g.globalAlpha = 1;
@@ -276,14 +281,14 @@ export class HandFire {
       // glow behind the hand, flaring on a hit
       c.globalCompositeOperation = "lighter";
       const glow = this.sprite(color, false), pc = [(p[0][0] + p[9][0]) / 2, (p[0][1] + p[9][1]) / 2];
-      const gs = L * (3 + 2.5 * flash);
+      const gs = L * (1.8 + 1.2 * st + 2.5 * flash * k);
       c.globalAlpha = (0.25 + 0.4 * flash) * k;
       c.drawImage(glow, pc[0] - gs / 2, pc[1] - gs / 2, gs, gs);
       c.globalAlpha = k; // the lit hand fades in over the dimmed video
       c.globalCompositeOperation = "source-over";
       c.drawImage(this.layer, 0, 0, cw, ch, x0, y0, cw / RES, ch / RES);
       c.globalCompositeOperation = "lighter";
-      const hot = this.sprite(color, true), ts = L * (0.5 + 0.4 * flash);
+      const hot = this.sprite(color, true), ts = L * (0.25 + 0.25 * st + 0.4 * flash * k);
       c.globalAlpha = (0.3 + 0.3 * flash) * k;
       for (const t of TIPS) c.drawImage(hot, p[t][0] - ts / 2, p[t][1] - ts / 2, ts, ts);
       c.globalAlpha = 1;
@@ -291,18 +296,19 @@ export class HandFire {
     }
     // new flames off the fingertips (more on a hit), drifting with the hand
     const hv = [v[0] * app.fw * app.scale * 0.3, v[1] * app.fh * app.scale * 0.3];
-    for (const k of TIPS) {
-      const j = k === 4 ? 3 : k - 1; // the joint below the tip: the finger's direction
-      const d = [p[k][0] - p[j][0], p[k][1] - p[j][1]], dl = Math.hypot(...d) || 1;
-      let n = FLAME_RATE * (1 + 2 * flash) * k * dt;
+    for (const t of TIPS) {
+      const j = t === 4 ? 3 : t - 1; // the joint below the tip: the finger's direction
+      const d = [p[t][0] - p[j][0], p[t][1] - p[j][1]], dl = Math.hypot(...d) || 1;
+      let n = FLAME_RATE * (1 + 2 * flash * k) * k * dt;
       while (n > 0) {
         if (n < 1 && Math.random() > n) break;
         n -= 1;
-        const sp = L * (0.5 + Math.random() * 0.6);
-        this.spawn(p[k][0] + (Math.random() - 0.5) * 0.15 * L, p[k][1] + (Math.random() - 0.5) * 0.15 * L,
-          (d[0] / dl) * sp * 0.8 + (Math.random() - 0.5) * 0.6 * L + hv[0],
-          (d[1] / dl) * sp * 0.8 - L * (1.8 + Math.random() * 1.2) + hv[1],
-          L * (0.2 + Math.random() * 0.12 + 0.1 * flash), 0.3 + Math.random() * 0.3 + 0.15 * flash, color);
+        const sp = L * (0.5 + Math.random() * 0.6) * (0.5 + 0.5 * st);
+        this.spawn(p[t][0] + (Math.random() - 0.5) * 0.15 * L, p[t][1] + (Math.random() - 0.5) * 0.15 * L,
+          (d[0] / dl) * sp * 0.8 + (Math.random() - 0.5) * 0.6 * L * (0.4 + 0.6 * st) + hv[0],
+          (d[1] / dl) * sp * 0.8 - L * (1.8 + Math.random() * 1.2) * (0.35 + 0.65 * st) + hv[1],
+          L * (0.2 + Math.random() * 0.12 + 0.1 * flash * k) * (0.35 + 0.65 * st),
+          (0.3 + Math.random() * 0.3 + 0.15 * flash * k) * (0.5 + 0.5 * st), color);
       }
     }
   }
@@ -335,7 +341,7 @@ export class HandFire {
     for (const q of f) {
       q.age += dt;
       if (q.age >= q.life) {
-        if (!q.spark && Math.random() < SMOKE_ODDS && this.smoke.length < MAX_SMOKE) {
+        if (!q.spark && Math.random() < SMOKE_ODDS * q.h && this.smoke.length < MAX_SMOKE) {
           this.smoke.push({ x: q.x, y: q.y, vx: q.vx * 0.3, vy: q.vy * 0.3, size: q.size * 1.3, life: 1.2 + Math.random() * 0.9, age: 0 });
         }
         continue;
@@ -353,12 +359,12 @@ export class HandFire {
       const k = q.age / q.life;
       if (q.spark) {
         const s = q.size * (1 - 0.5 * k);
-        c.globalAlpha = 1 - k;
+        c.globalAlpha = (1 - k) * q.a;
         c.drawImage(this.sprite(q.color, true), q.x - s / 2, q.y - s / 2, s, s);
         continue;
       }
       const s = q.size * (1 - 0.6 * k) * (k < 0.15 ? 0.5 + k / 0.3 : 1);
-      const a = (1 - k) ** 1.5;
+      const a = (1 - k) ** 1.5 * q.a;
       c.globalAlpha = 0.6 * a * (1 - k);
       c.drawImage(this.sprite(q.color, true), q.x - s / 2, q.y - s, s, s * 2);
       c.globalAlpha = 0.85 * a * k * 1.4;

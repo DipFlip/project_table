@@ -15,6 +15,7 @@ import { FLAGS, add, sub, mul, dot, norm, perp, clamp, rgb, rand, OneEuro, Sound
 import { Volleyball } from "./volley.js";
 import { Juggle, ColorJuggle } from "./juggle.js";
 import { HandFire } from "./handfire.js";
+import { HandGuide } from "./framing.js";
 import { Menu, ExitGesture } from "./menu.js";
 
 const BUNDLE = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.1/vision_bundle.mjs"; // keep tracker.js in step
@@ -98,6 +99,7 @@ class HandPong {
     this.hands = [new Hand(), new Hand()];
     this.frameN = -1;
     this.fire = new HandFire(app); // on by default, h toggles: tinted hands with flames
+    this.guide = new HandGuide();
     this.newMatch(app.now);
   }
 
@@ -248,6 +250,7 @@ class HandPong {
 
   update(dt, now) {
     this.track();
+    this.guide.update(dt, this.app.frame, this.app, this.field);
     const paddles = [this.paddle(0), this.paddle(1)];
     if (this.ball === null && this.winner === null && paddles.some((p) => p === null)) {
       this.serveAt = Math.max(this.serveAt, now + 1.0); // serve only once both players are in
@@ -272,8 +275,9 @@ class HandPong {
       if ((this.ball[1] < f.top + this.r && this.vel[1] < 0) || (this.ball[1] > f.bottom - this.r && this.vel[1] > 0)) {
         this.vel[1] = -this.vel[1];
         this.app.sound.play("wall", 0.6);
-        if (this.fire.heat > 0) this.fire.wall(this.ball, [0, Math.sign(this.vel[1])], this.flash ? this.players[this.flash[0]].color : [255, 150, 40], this.r);
-        else this.app.fx.burst(this.ball, [200, 200, 200], { n: 6, speed: 120, life: 0.25, size: 2.5 });
+        const heat = this.fire.heat;
+        if (heat > 0) this.fire.wall(this.ball, [0, Math.sign(this.vel[1])], this.flash ? this.players[this.flash[0]].color : [255, 150, 40], this.r);
+        if (heat < 1) this.app.fx.burst(this.ball, [200, 200, 200], { n: Math.round(6 * (1 - heat)), speed: 120, life: 0.25, size: 2.5 });
       }
       let hit = false;
       for (let i = 0; i < 2 && !hit; i++) if (paddles[i]) hit = this.touch(i, paddles[i], now);
@@ -345,6 +349,7 @@ class HandPong {
     });
 
     if (HandFire.on) this.fire.draw(c, this, now);
+    this.guide.draw(c, this, this.app.turned);
 
     const frame = this.app.frame;
     if (frame && this.app.debug) {
@@ -378,14 +383,18 @@ class HandPong {
     });
 
     if (this.ball) {
-      const n = this.fire.heat > 0 ? 0 : this.trail.length; // once it burns, the ball's flames are its trail
-      this.trail.slice(0, n).forEach((q, j) => {
-        const k = (j + 1) / n;
-        c.fillStyle = `rgb(${120 + 135 * k},${120 + 135 * k},${100 + 130 * k})`;
-        c.beginPath();
-        c.arc(q[0], q[1], this.r * (0.25 + 0.6 * k), 0, 2 * Math.PI);
-        c.fill();
-      });
+      const heat = this.fire.heat, n = this.trail.length;
+      if (heat < 1 && n) { // fades out as the ball's flames take over as its trail
+        c.globalAlpha = 1 - heat;
+        this.trail.forEach((q, j) => {
+          const k = (j + 1) / n;
+          c.fillStyle = `rgb(${120 + 135 * k},${120 + 135 * k},${100 + 130 * k})`;
+          c.beginPath();
+          c.arc(q[0], q[1], this.r * (0.25 + 0.6 * k), 0, 2 * Math.PI);
+          c.fill();
+        });
+        c.globalAlpha = 1;
+      }
       c.fillStyle = "black";
       c.beginPath();
       c.arc(this.ball[0], this.ball[1], this.r + 3, 0, 2 * Math.PI);
@@ -394,15 +403,9 @@ class HandPong {
       c.beginPath();
       c.arc(this.ball[0], this.ball[1], this.r, 0, 2 * Math.PI);
       c.fill();
-    } else if (this.winner === null) {
-      const waiting = this.players.filter((p, i) => !this.paddle(i));
-      for (const p of waiting) {
-        this.text(c, small, `${p.name}: show your hand`, [f.centerX - p.dir * f.width * 0.25, f.centerY], p.color);
-      }
-      if (!waiting.length) {
-        const left = Math.max(0, this.serveAt - now);
-        this.text(c, small, `serve in ${Math.round(left)}`, [f.centerX, f.centerY], [255, 255, 255]);
-      }
+    } else if (this.winner === null && this.players.every((_, i) => this.paddle(i))) {
+      const left = Math.max(0, this.serveAt - now);
+      this.text(c, small, `serve in ${Math.round(left)}`, [f.centerX, f.centerY], [255, 255, 255]);
     }
     if (this.winner !== null) {
       const w = this.players[this.winner];
@@ -751,7 +754,7 @@ class CamApp {
     this.fx.draw(c);
     if (this.exit) {
       if (this.exit.update(this.frame, (q) => this.toCourt(q), now)) this.select("menu");
-      this.exit.draw(c, now, this.H);
+      this.exit.draw(c, now, this.turned ? this.W : this.H, this.turned);
     }
     c.restore();
     this.stats.tick(now, { particles: this.fx.p.length, sounds: this.sound.live, ball: !!this.scene.ball });
@@ -843,13 +846,13 @@ async function start(game) {
   const buttons = document.querySelectorAll("#start button"), err = document.getElementById("err");
   buttons.forEach((b) => (b.disabled = true));
   try {
-    err.textContent = "Starting camera…";
+    err.textContent = "Starting camera...";
     const video = document.getElementById("video");
     video.srcObject = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }, audio: false,
     });
     await video.play();
-    err.textContent = `Loading ${game.what} tracking…`;
+    err.textContent = `Loading ${game.what} tracking...`;
     const tracker = await getTracker(game);
     if (app) return; // started meanwhile from the other path
     document.getElementById("start").remove();

@@ -4,17 +4,18 @@
 // "side" group. Every costume is painted over these poses; in the game each layer is bent from
 // here to the player's tracked pose. Plain data, so the costume generator can import it too.
 export const SIZE = [2048, 1536];
+export const FRONT_CROP = [100, 0, 1000, 1536]; // region exported at half size as template-front.png
 
 export const REST = {
   head: [512, 215], earL: [434, 222], earR: [590, 222],
   eyeL: [478, 205], eyeR: [546, 205], nose: [512, 240], mouthL: [490, 272], mouthR: [534, 272],
   neck: [512, 335],
-  shL: [380, 385], shR: [644, 385],
+  shL: [380, 385], shR: [644, 385], shMid: [512, 385],
   elL: [318, 610], elR: [706, 610],
   wrL: [282, 820], wrR: [742, 820],
   handL: [270, 905], handR: [754, 905],
-  hipL: [446, 820], hipR: [578, 820],
-  knL: [436, 1120], knR: [588, 1120],
+  hipL: [446, 820], hipR: [578, 820], hipMid: [512, 820],
+  knL: [436, 1120], knR: [588, 1120], knMid: [512, 1120],
   anL: [430, 1405], anR: [594, 1405],
   toeL: [346, 1445], toeR: [678, 1445], // feet turned out to the sides
 };
@@ -31,6 +32,8 @@ export const BALL = { at: [890, 150], r: 100 };
 export const BONES = {
   chest: { from: "shL", to: "shR" },
   pelvis: { from: "hipL", to: "hipR" },
+  trunk: { from: "shMid", to: "hipMid" },
+  tail: { from: "hipMid", to: "knMid" },
   // the head follows a fit to all the face points the tracker gives (ears, eyes, nose, mouth), so
   // it tilts, nods and turns; art near the mouth is also pinned to the tracked mouth
   head: { from: "earL", to: "earR", uniform: true },
@@ -48,7 +51,9 @@ export const BONES = {
 export const PARTS = {
   back: { chest: 1, pelvis: 1 },
   torso: { chest: 1, pelvis: 1 },
+  body: { trunk: 1, tail: 0.95 }, // full-length or legless tunic/robes/tailfeathers hanging down from torso
   head: { head: 1, mouth: 0.6, chest: 0.35 },
+  hat: { head: 1 },
   arm_l: { upperL: 1, foreL: 1, handL: 0.8 },
   arm_r: { upperR: 1, foreR: 1, handR: 0.8 },
   leg_l: { thighL: 1, shinL: 1, footL: 0.8 },
@@ -83,7 +88,9 @@ export const SIDE_BONES = {
 export const SIDE_PARTS = {
   back: { spine: 1 },
   torso: { spine: 1 },
+  body: { spine: 1 },
   head: { head: 1, mouth: 0.6, spine: 0.35 },
+  hat: { head: 1 },
   arm_near: { upperN: 1, foreN: 1, handN: 0.8 },
   arm_far: { upperF: 1, foreF: 1, handF: 0.8 },
   leg_near: { thighN: 1, shinN: 1, footN: 0.8 },

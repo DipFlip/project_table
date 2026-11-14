@@ -5,12 +5,12 @@
 // WebGL. Layers draw in the PSD's order; hidden layers and "guide" are skipped. A costume's "side"
 // group holds a side view (facing right, mirrored for players facing left), swapped in when a
 // player turns side-on. The c key cycles the costume; ?skin=astronaut (werewolf, robot, farmer,
-// mix) starts with one. Drawing a new one: costumes/README.md.
-import { add, sub, mul, norm, OneEuro } from "./common.js";
-import { REST, BONES, PARTS, REST_SIDE, SIDE_BONES, SIDE_PARTS, SIDE_CENTER, BALL } from "./rest.js";
+// birdperson, freakshow, mix) starts with one. Drawing a new one: costumes/README.md.
+import { add, sub, mul, norm, OneEuro, FONT } from "./common.js";
+import { SIZE, FRONT_CROP, REST, BONES, PARTS, REST_SIDE, SIDE_BONES, SIDE_PARTS, SIDE_CENTER, BALL } from "./rest.js";
 
-export const SKINS = ["none", "astronaut", "werewolf", "robot", "farmer", "mix"];
-const CAST = ["astronaut", "werewolf", "robot", "farmer"];
+export const SKINS = ["none", "astronaut", "werewolf", "robot", "farmer", "birdperson", "freakshow", "mix"];
+const CAST = ["astronaut", "werewolf", "robot", "farmer", "birdperson", "freakshow"];
 const AG_PSD = "https://cdn.jsdelivr.net/npm/ag-psd@31.0.3/dist/bundle.js"; // same version as tools/costumes
 const VIS = 0.5; // landmark visibility that counts a joint as tracked
 const GRACE_S = 0.4; // keep drawing a body this long after it drops out of tracking
@@ -29,7 +29,8 @@ const LANDMARK = {
 };
 // a bone whose joints aren't tracked carries on rigidly from its parent (an arm hangs from the chest)
 const PARENT = {
-  pelvis: "chest", head: "chest", mouth: "head", upperL: "chest", foreL: "upperL", handL: "foreL", upperR: "chest", foreR: "upperR", handR: "foreR",
+  pelvis: "chest", trunk: "chest", tail: "trunk", head: "chest", mouth: "head",
+  upperL: "chest", foreL: "upperL", handL: "foreL", upperR: "chest", foreR: "upperR", handR: "foreR",
   thighL: "pelvis", shinL: "thighL", footL: "shinL", thighR: "pelvis", shinR: "thighR", footR: "shinR",
 };
 const SIDE_PARENT = {
@@ -55,7 +56,7 @@ const distToSeg = (p, a, b) => {
 let agPsd = null;
 async function readPsd(url) {
   if (!agPsd) {
-    await import(AG_PSD);
+    if (!window.agPsd) await import(AG_PSD);
     agPsd = window.agPsd;
   }
   const buf = await (await fetch(url, { cache: "no-cache" })).arrayBuffer(); // pick up a re-saved PSD on reload
@@ -65,32 +66,94 @@ async function readPsd(url) {
 // PSD layers (groups flattened, bottom to top) that belong to a part, by their own or a group's
 // name; the top level is the front view, the "side" group the side view
 const firstWord = (n) => (n.name || "").trim().toLowerCase().split(/\s+/)[0];
+const IGNORE = new Set(["template", "background", "guide"]);
+
+// Map PSD canvas coordinates into 2048 x 1536 REST coordinates (supports both template.psd and
+// costumes painted directly over template-front.png at 450 x 768).
+function canvasToRest(psd) {
+  const w = psd.width || SIZE[0], h = psd.height || SIZE[1];
+  const cw = FRONT_CROP[2] - FRONT_CROP[0], ch = FRONT_CROP[3] - FRONT_CROP[1];
+  if (Math.abs(w / h - SIZE[0] / SIZE[1]) < 0.05) return { ox: 0, oy: 0, sx: SIZE[0] / w, sy: SIZE[1] / h };
+  if (Math.abs(w / h - cw / ch) < 0.05) return { ox: FRONT_CROP[0], oy: FRONT_CROP[1], sx: cw / w, sy: ch / h };
+  const sy = SIZE[1] / h;
+  return { ox: REST.head[0] - (w * sy) / 2, oy: 0, sx: sy, sy };
+}
+
 function partLayers(nodes, parts, inherited = null, out = []) {
   for (const n of nodes || []) {
-    // the template's reference mannequin is for painting over, not for the game
-    if (n.hidden || (n.children && firstWord(n) === "template") || (parts === PARTS && n.children && firstWord(n) === "side")) continue;
     const word = firstWord(n);
+    // reference mannequin / background / guide layers are for painting over, not for the game
+    if (n.hidden || IGNORE.has(word) || (parts === PARTS && n.children && word === "side")) continue;
     const part = parts[word] ? word : inherited;
     if (n.children) partLayers(n.children, parts, part, out);
     else if (part && n.imageData && n.imageData.width > 0) out.push({ part, layer: n });
   }
   return out;
 }
+
+// If a costume has both a "body" layer and a separate "hat"/"head" layer (e.g. duplicated from
+// "body" in Photoshop without erasing the original), clear the duplicate pixels above the neck.
+function prepareBodyLayers(entries, xform) {
+  const headLayers = entries.filter((e) => e.part === "hat" || e.part === "head").map((e) => e.layer);
+  const neckCutoff = Math.floor((REST.neck[1] - 20 - xform.oy) / xform.sy);
+  for (const e of entries) {
+    if (e.part !== "body") continue;
+    if (!headLayers.length) {
+      if (xform.oy + e.layer.top * xform.sy < REST.neck[1] - 20) e.weights = { head: 0.9, trunk: 1, tail: 0.95 };
+      continue;
+    }
+    const b = e.layer, bw = b.imageData.width, bh = b.imageData.height;
+    let cloned = false;
+    for (const h of headLayers) {
+      const hw = h.imageData.width, hh = h.imageData.height;
+      const x0 = Math.max(b.left, h.left - 3), x1 = Math.min(b.left + bw, h.left + hw + 3);
+      const y0 = Math.max(b.top, h.top - 3), y1 = Math.min(b.top + bh, h.top + hh + 3, neckCutoff);
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          const bi = ((y - b.top) * bw + (x - b.left)) * 4;
+          if (b.imageData.data[bi + 3] === 0) continue;
+          let covered = false;
+          for (let dy = -3; dy <= 3 && !covered; dy++) {
+            const hy = y + dy - h.top;
+            if (hy < 0 || hy >= hh) continue;
+            for (let dx = -3; dx <= 3; dx++) {
+              const hx = x + dx - h.left;
+              if (hx >= 0 && hx < hw && h.imageData.data[(hy * hw + hx) * 4 + 3] > 16) {
+                covered = true;
+                break;
+              }
+            }
+          }
+          if (covered) {
+            if (!cloned) {
+              b.imageData = { width: bw, height: bh, data: new Uint8ClampedArray(b.imageData.data) };
+              cloned = true;
+            }
+            b.imageData.data[bi + 3] = 0;
+          }
+        }
+      }
+    }
+  }
+}
+
 // the costume's "ball" layer cut out to the ball's circle on a canvas, or null if none is painted
-function ballArt(nodes) {
+function ballArt(nodes, xform = { ox: 0, oy: 0, sx: 1, sy: 1 }) {
   const find = (ns) => {
     for (const n of ns || []) {
-      if (n.hidden || (n.children && ["template", "side"].includes(firstWord(n)))) continue;
+      const word = firstWord(n);
+      if (n.hidden || IGNORE.has(word) || (n.children && word === "side")) continue;
       if (n.children) {
         const f = find(n.children);
         if (f) return f;
-      } else if (firstWord(n) === "ball" && n.imageData && n.imageData.width > 1) return n;
+      } else if (word === "ball" && n.imageData && n.imageData.width > 1) return n;
     }
     return null;
   };
   const layer = find(nodes);
   if (!layer) return null;
-  const { r, at } = BALL, cv = document.createElement("canvas");
+  const r = Math.round(BALL.r / xform.sx), at = [(BALL.at[0] - xform.ox) / xform.sx, (BALL.at[1] - xform.oy) / xform.sy];
+  const cv = document.createElement("canvas");
   cv.width = cv.height = 2 * r;
   const img = layer.imageData, tmp = document.createElement("canvas");
   [tmp.width, tmp.height] = [img.width, img.height];
@@ -113,22 +176,23 @@ export function drawBallArt(c, art, x, y, r) {
 const sideGroup = (nodes) => (nodes || []).find((n) => n.children && firstWord(n) === "side");
 
 // a grid mesh over a layer's painted pixels, each vertex weighted to its part's bones
-function buildMesh(layer, part, side = false) {
+function buildMesh(layer, part, side = false, xform = { ox: 0, oy: 0, sx: 1, sy: 1 }, weights = null) {
   const [parts, bonesDef, names, rest0] = side ? [SIDE_PARTS, SIDE_BONES, SIDE_NAMES, REST_SIDE] : [PARTS, BONES, BONE_NAMES, REST];
   const { left, top, imageData: img } = layer, w = img.width, h = img.height;
-  const cols = Math.ceil(w / GRID), rows = Math.ceil(h / GRID);
+  const step = Math.max(4, Math.round(GRID / xform.sx));
+  const cols = Math.ceil(w / step), rows = Math.ceil(h / step);
   const solid = (cx, cy) => {
-    for (let y = Math.max(0, cy * GRID - 1); y < Math.min(h, (cy + 1) * GRID + 1); y++)
-      for (let x = Math.max(0, cx * GRID - 1); x < Math.min(w, (cx + 1) * GRID + 1); x++) if (img.data[(y * w + x) * 4 + 3] > 4) return true;
+    for (let y = Math.max(0, cy * step - 1); y < Math.min(h, (cy + 1) * step + 1); y++)
+      for (let x = Math.max(0, cx * step - 1); x < Math.min(w, (cx + 1) * step + 1); x++) if (img.data[(y * w + x) * 4 + 3] > 4) return true;
     return false;
   };
   const vid = new Map(), rest = [], uv = [], idx = [];
   const vert = (gx, gy) => {
     const k = gy * (cols + 1) + gx;
     if (!vid.has(k)) {
-      const x = Math.min(gx * GRID, w), y = Math.min(gy * GRID, h);
+      const x = Math.min(gx * step, w), y = Math.min(gy * step, h);
       vid.set(k, rest.length / 2);
-      rest.push(left + x, top + y);
+      rest.push(xform.ox + (left + x) * xform.sx, xform.oy + (top + y) * xform.sy);
       uv.push(x / w, y / h);
     }
     return vid.get(k);
@@ -139,7 +203,7 @@ function buildMesh(layer, part, side = false) {
     idx.push(a, b, c, b, d, c);
   }
   // weights: inverse distance to each bone of the part (scaled by its reach), strongest 3 kept
-  const bones = Object.entries(parts[part]).map(([name, reach]) => ({ i: names.indexOf(name), a: rest0[bonesDef[name].from], b: rest0[bonesDef[name].to], reach }));
+  const bones = Object.entries(weights || parts[part]).map(([name, reach]) => ({ i: names.indexOf(name), a: rest0[bonesDef[name].from], b: rest0[bonesDef[name].to], reach }));
   const n = rest.length / 2, wb = new Uint8Array(n * 3), ww = new Float32Array(n * 3);
   for (let v = 0; v < n; v++) {
     const p = [rest[2 * v], rest[2 * v + 1]];
@@ -282,12 +346,24 @@ function poseBones(P) {
   const shL = joint("shL"), shR = joint("shR");
   if (!shL || !shR) return null;
   // body size: shoulder width, or the torso's length when the player turns side-on
-  const hipL = joint("hipL"), hipR = joint("hipR");
-  let size = norm(sub(shR, shL)) / REST_SHOULDERS;
-  if (hipL && hipR) size = Math.max(size, (0.85 * norm(sub(mul(add(hipL, hipR), 0.5), mul(add(shL, shR), 0.5)))) / REST_TORSO);
+  const shMid = mul(add(shL, shR), 0.5), hipMid = midOf(joint, "hipL", "hipR"), knMid = midOf(joint, "knL", "knR");
+  const shoulderScale = norm(sub(shR, shL)) / REST_SHOULDERS;
+  let size = shoulderScale;
+  if (hipMid) size = Math.max(size, (0.85 * norm(sub(hipMid, shMid))) / REST_TORSO);
+  const widthScale = Math.max(size * 0.45, shoulderScale);
+  const hip = hipMid || add(shMid, [0, REST_TORSO * size]);
   const maps = {};
   for (const name of BONE_NAMES) {
-    const bone = BONES[name], a = !bone.rigid && joint(bone.from), b = !bone.rigid && joint(bone.to);
+    const bone = BONES[name];
+    if (name === "trunk") {
+      maps.trunk = boneMap(REST.shMid, REST.hipMid, shMid, hip, widthScale, false);
+      continue;
+    }
+    if (name === "tail") {
+      maps.tail = knMid && norm(sub(knMid, hip)) > 2 ? boneMap(REST.hipMid, REST.knMid, hip, knMid, widthScale, false) : maps.trunk;
+      continue;
+    }
+    const a = !bone.rigid && joint(bone.from), b = !bone.rigid && joint(bone.to);
     if (name === "head") {
       const pairs = ["earL", "earR", "eyeL", "eyeR", "nose", "mouthL", "mouthR"].map((j) => [REST[j], joint(j)]).filter(([, q]) => q);
       const plain = a && b && norm(sub(b, a)) > 2 ? boneMap(REST.earL, REST.earR, a, b, size, true) : null;
@@ -420,16 +496,28 @@ export class Costumes {
     for (const n of names) {
       if (this.costumes[n] || !this.gl.gl) continue;
       this.costumes[n] = readPsd(`costumes/${n}.psd`).then((psd) => {
+        const xform = canvasToRest(psd);
         // layers with nothing painted are dropped, so an empty side group means front view only
-        const make = (nodes, parts, side) => partLayers(nodes, parts)
-          .map(({ part, layer }) => Object.assign(buildMesh(layer, part, side), { alpha: layer.opacity ?? 1 }))
-          .filter((m) => m.idx.length > 0)
-          .map((m) => {
-            this.gl.upload(m);
-            return m;
-          });
-        const side = make(sideGroup(psd.children)?.children, SIDE_PARTS, true);
-        this.costumes[n] = { front: make(psd.children, PARTS, false), side, sideLeft: side.map(mirrored), ball: ballArt(psd.children) };
+        const make = (nodes, parts, side, xf) => {
+          const entries = partLayers(nodes, parts);
+          if (!side) prepareBodyLayers(entries, xf);
+          return entries
+            .map(({ part, layer, weights }) => Object.assign(buildMesh(layer, part, side, xf, weights), { alpha: layer.opacity ?? 1 }))
+            .filter((m) => m.idx.length > 0)
+            .map((m) => {
+              this.gl.upload(m);
+              return m;
+            });
+        };
+        // art painted straight into the template group's front layers (and nothing outside it)
+        // is taken from there; the group's side view stays the grey figure, so it's left out
+        let nodes = psd.children;
+        if (!partLayers(nodes, PARTS).length) {
+          const tpl = nodes.find((c) => c.children && firstWord(c) === "template");
+          if (tpl) nodes = tpl.children.filter((c) => !(c.children && firstWord(c) === "side"));
+        }
+        const side = make(sideGroup(psd.children)?.children, SIDE_PARTS, true, { ox: 0, oy: 0, sx: 1, sy: 1 });
+        this.costumes[n] = { front: make(nodes, PARTS, false, xform), side, sideLeft: side.map(mirrored), ball: ballArt(nodes, xform) };
       }).catch((e) => {
         console.error(`costume ${n}:`, e);
         this.costumes[n] = { front: [], side: [], sideLeft: [], ball: null };
@@ -506,8 +594,9 @@ export class Costumes {
     if (age < 1.5) {
       c.save();
       c.globalAlpha = Math.min(1, 1.5 - age);
-      c.font = `bold ${Math.round(H * 0.06)}px system-ui, sans-serif`;
+      c.font = `${Math.round(H * 0.06)}px ${FONT}`;
       c.textAlign = "center";
+      c.lineJoin = "round";
       c.lineWidth = 6;
       c.strokeStyle = "black";
       c.fillStyle = "white";
